@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trinomial-tree"
+version = "0.1.0"
+description = "A Python library for pricing options using a trinomial tree model."
+readme = "README.md"
+authors = [
+    { name = "Your Name", email = "your.email@example.com" }
+]
+
+dependencies = [
+    "numpy>=1.21.0",
+]
+requires-python = ">=3.8"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "black>=23.0",
+    "mypy>=1.0",
+    "types-setuptools",
+]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/trinomial-tree"
+Documentation = "https://github.com/yourusername/trinomial-tree/blob/main/README.md"
+Repository = "https://github.com/yourusername/trinomial-tree"
+Issues = "https://github.com/yourusername/trinomial-tree/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["trinomial_tree*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.*", "py.typed"]
+
+[tool.black]
+line-length = 88
+target-version = ['py38']
+include = '\.pyi?$'
+exclude = '''
+/(
+    \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | buck-out
+  | build
+  | dist
+)/
+'''
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
