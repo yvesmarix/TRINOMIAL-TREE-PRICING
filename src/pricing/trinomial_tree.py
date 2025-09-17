@@ -1,104 +1,143 @@
 import numpy as np
+import matplotlib.pyplot as plt
+import networkx as nx
 
-class TrinomialTreeNode:
-    def __init__(self, price, time, up=None, mid=None, down=None):
-        self.price = price
-        self.time = time
-        self.up = up
-        self.mid = mid
-        self.down = down
-        self.option_value = None
+class Market:
+    def __init__(self, S0, r, sigma, D=None):
+        self.S0 = S0      # Prix initial de l'actif sous-jacent
+        self.r = r        # Taux d'intérêt sans risque
+        self.sigma = sigma # Volatilité de l'actif sous-jacent
+        self.D = D if D is not None else [] # Dividendes discrets
+
+class Option:
+    def __init__(self, K, option_type, T):
+        self.K = K  # Strike price
+        self.option_type = option_type
+        self.T = T
+
+class Node:
+    def __init__(self, underlying, tree):
+        self.underlying = underlying
+        self.tree = tree
+        self.node_up = None
+        self.node_mid = None
+        self.node_down = None
 
 class TrinomialTree:
-    def __init__(self, S0, r, sigma, T, N, K, D=None):
-        self.S0 = S0
-        self.r = r
-        self.sigma = sigma
-        self.T = T
+    def __init__(self, market, option, N):
+        self.market = market
+        self.option = option
         self.N = N
-        self.K = K
-        self.D = D if D is not None else [0] * N
-        self.delta_t = T / N # pas de temps egaux
-        self.alpha = np.exp(sigma * np.sqrt(3 * self.delta_t)) # choix arbitraire de sqrt(3) 
+        self.delta_t = option.T / N
+        self.alpha = np.exp(market.sigma * np.sqrt(3 * self.delta_t))
         self.root = None
 
-    def _calculate_probabilities(self, Sti):
+        # calcul des probabilités une seule fois
+        forward_1 = np.exp(self.market.r * self.delta_t)*self.market.S0
+        variance_1 = self.market.S0**2 * np.exp(2*self.market.r*self.delta_t)*(np.exp(self.market.sigma**2 * self.delta_t)-1)
+
+        # Calcul des probabilités
+        self.p_down = (forward_1**(-2)*(variance_1+forward_1**2)-1-(self.alpha+1)*(forward_1**(-1)*forward_1-1))/((1-self.alpha)*(self.alpha**(-2)-1))
+        self.p_up = self.p_down / self.alpha
+        self.p_mid = 1 - self.p_up - self.p_down
+
+    def build_tree(self):
         """
-        Determine les probabilités de transitions vers chaque noeud à
-        partir du systeme d'equation suivant : 
-        - à chaque noeud la somme des 3 probabilités p_up + p_down + p_mid = 1
-        - avec comme condition que la moyenne pondérée des S_up/mid/down par leurs 
-            probabilités respectives soit égale à l'espérance du prix en i+1 
-            conditionnelle au prix en i qui vaut = Sti*exp(r*delta de temps) - Dti+1
-        - avec comme autre condition que la variance 
-        soit = (Sti^2)*(exp(2r*delta de temps))*(exp(sigma^2 * delta de temps)-1)
+        Construit l'arbre trinomial en créant des objets Node à chaque étape.
         """
-        p_down = (np.exp(self.sigma**2 * self.delta_t) - 1) / ((1 - self.alpha) * (self.alpha**(-2) - 1))
-        p_up = p_down / self.alpha
-        p_mid = 1 - p_up - p_down
-        return p_up, p_mid, p_down
+        self.root = Node(underlying=self.market.S0, tree=self)
+        self.levels = [[self.root]]
+        
+        for _ in range(self.N):
+            next_level = []
+            for node in self.levels[-1]:
+                up = node.underlying * self.alpha
+                mid = node.underlying * np.exp(self.market.r * self.delta_t)
+                down = node.underlying / self.alpha
+                node_up = Node(underlying=up, tree=self)
+                node_mid = Node(underlying=mid, tree=self)
+                node_down = Node(underlying=down, tree=self)
+                node.node_up = node_up
+                node.node_mid = node_mid
+                node.node_down = node_down
+                next_level.extend([node_up, node_mid, node_down])
+            self.levels.append(next_level)
 
-    def _build_tree(self):
-        nodes = {}
-        # initialisation de l'arbre
-        nodes[(0, 0)] = TrinomialTreeNode(self.S0, 0) # racine de l'arbre
-
-        for i in range(1, self.N + 1):
-            # j peut prendre la valeur -i, 0 ou i pour les 3 etats possibles down/mid/up
-            for j in range(-i, i + 1):
-                # calcul du prix forward
-                if i == 1:
-                    S_mid = self.S0 * np.exp(self.r * self.delta_t) - self.D[0]
-                else:
-                    parent_j = j
-                    parent_node = nodes[(i-1, parent_j)]
-                    # forward ajuste des dividendes
-                    S_mid = parent_node.price * np.exp(self.r * self.delta_t) - self.D[i-1]
-
-                S_up = S_mid * self.alpha
-                S_down = S_mid / self.alpha
-
-                # creation des noeuds
-                nodes[(i, j)] = TrinomialTreeNode(S_up, i * self.delta_t)
-                nodes[(i, j-1)] = TrinomialTreeNode(S_mid, i * self.delta_t)
-                nodes[(i, j-2)] = TrinomialTreeNode(S_down, i * self.delta_t)
-
-                # lien avec le parent
-                parent_node.up = nodes[(i, j)]
-                parent_node.mid = nodes[(i, j-1)]
-                parent_node.down = nodes[(i, j-2)]
-
-        self.root = nodes[(0, 0)]
-        return nodes
-
-    def _evaluate_payoff(self, node):
-        if node.price > self.K:
-            return node.price - self.K
-        else:
-            return 0
-
-    def _backward_induction(self, nodes):
-        for i in range(self.N, 0, -1):
-            for j in range(-i, i + 1):
-                node = nodes[(i, j)]
-                if node is None:
-                    continue
-                node.option_value = self._evaluate_payoff(node)
-
-            for j in range(-i, i + 1):
-                node = nodes[(i-1, j)]
-                if node is None or node.up is None:
-                    continue
-                p_up, p_mid, p_down = self._calculate_probabilities(node.price)
-                node.option_value = np.exp(-self.r * self.delta_t) * (
-                    p_up * node.up.option_value +
-                    p_mid * node.mid.option_value +
-                    p_down * node.down.option_value
-                )
-
-        return self.root.option_value
-
+        return self.root
+    
     def price_option(self):
-        nodes = self._build_tree()
-        return self._backward_induction(nodes)
+        """
+        Calcule le prix de l'option en parcourant l'arbre et en utilisant les probabilités.
+        Retourne le prix du call et du put.
+        """
+        if self.root is None:
+            self.build_tree()
 
+        # On commence par calculer les payoffs finaux pour chaque feuille
+        leaves = self.levels[-1]
+        match self.option.option_type:
+            case "call":
+                for leaf in leaves:
+                    leaf.call_payoff = max(0, leaf.underlying - self.option.K)
+            case "put":
+                for leaf in leaves:
+                    leaf.put_payoff = max(0, self.option.K - leaf.underlying)
+
+        # On remonte l'arbre pour calculer les prix actualisés
+        self._backward_induction(self.root)
+
+        # Le prix de l'option est à la racine
+        match self.option.option_type:
+            case "call":
+                return self.root.call_payoff
+            case "put":
+                return self.root.put_payoff
+
+    def _backward_induction(self, node):
+        """
+        Effectue la remontée de l'arbre pour calculer les prix actualisés.
+        """
+        discount = np.exp(-self.market.r*self.delta_t)
+
+        # On part de l'avant dernier niveau et on revient à la racine
+        for level in reversed(self.levels[:-1]):
+            for node in level:
+                match self.option.option_type:
+                    case "call":
+                        node.call_payoff = discount * (
+                            self.p_up * node.node_up.call_payoff +
+                            self.p_mid * node.node_mid.call_payoff +
+                            self.p_down * node.node_down.call_payoff
+                        )
+                    case "put":
+                        node.put_payoff = discount * (
+                            self.p_up * node.node_up.put_payoff +
+                            self.p_mid * node.node_mid.put_payoff +
+                            self.p_down * node.node_down.put_payoff
+                        )
+
+
+    def display_tree(self, STs):
+        """
+        Affiche l'arbre trinomial avec les prix à chaque nœud.
+        :param STs: Liste des niveaux de l'arbre contenant les prix des nœuds.
+        """
+
+        G = nx.DiGraph()
+        pos = {}
+
+        for level, nodes in enumerate(STs):
+            for i, price in enumerate(nodes):
+                node_id = f"{level}-{i}"
+                G.add_node(node_id, price=price)
+                pos[node_id] = (level, -i)
+
+                if level > 0:
+                    parent_level = STs[level - 1]
+                    parent_id = f"{level - 1}-{i // 3}"
+                    G.add_edge(parent_id, node_id)
+
+        labels = {node: f"{data['price']:.2f}" for node, data in G.nodes(data=True)}
+        nx.draw(G, pos, with_labels=True, labels=labels, node_size=500, node_color="lightblue")
+        plt.title("Arbre Trinomial des Prix")
+        plt.show()

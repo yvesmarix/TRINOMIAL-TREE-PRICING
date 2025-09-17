@@ -1,4 +1,4 @@
-mport numpy as np
+import numpy as np
 from scipy.stats import norm
 
 
@@ -15,8 +15,7 @@ class BlackScholesPricer:
         q: float,
         sigma: float,
         option_type: str,
-        style: str,
-    ):
+        ):
         """
         Calculate option price using Black-Scholes formula
 
