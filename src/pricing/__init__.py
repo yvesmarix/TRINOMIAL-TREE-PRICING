@@ -1,2 +1,2 @@
 from blackscholes import BlackScholesPricer
-from trinomial_tree import TrinomialTree, Node, Market, Option
+from trinomial_tree import TrinomialTree, Market, Option
