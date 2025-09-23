@@ -1,45 +1,15 @@
 import numpy as np
 import pandas as pd
-from blackscholes import BlackScholesPricer
+from pricing import BlackScholesPricer, Model, Node
 
-class Market:
-    def __init__(self, S0, r, sigma, D=None):
-        self.S0 = S0
-        self.r = r
-        self.sigma = sigma
-        self.D = D if D is not None else []
-
-class Option:
-    def __init__(self, K, option_type, T):
-        self.K = K
-        self.option_type = option_type
-        self.T = T
-
-class Node:
-    def __init__(self, S, proba, up=None, down=None, next_up=None, next_mid=None, next_down=None):
-        self.S = S      # Prix du sous-jacent au nœud
-        self.proba = proba  # Probabilité d'atteindre ce nœud
-        self.up = up    # Nœud "up" frère
-        self.down = down# Nœud "down" frère
-        self.next_up = next_up    # Nœud "up" prochain
-        self.next_mid = next_mid  # Nœud "mid" prochain
-        self.next_down = next_down# Nœud "down" prochain
-        # il faudra rajouter option value ici pour le pricing
-        # il faut donner l'objet option à la racine de l’arbre
-        # on doit pouvoir faire tree.root.price(option)
-        # pour le pricing si next mid est None alors on est à la fin de l’arbre et on doit pricer
-
-        # la valeur intrinsèque ou payoff doit être une methode de la classe option 
-        # et on doit lui donner node.S pour pricer
-
-class TrinomialTree:
-    # ce serait bien de lui faire hériter de Model (voir moodle) une fonction check probability et str_pc, les deux en staticmethod
-    def __init__(self, market, option, N):
+class TrinomialTree(Model):
+    def __init__(self, market, option, N, pricingDate=None):
         self.market = market
         self.option = option
         self.N = N
         self.delta_t = option.T / N
         self.alpha = np.exp(market.sigma * np.sqrt(3 * self.delta_t))
+        super().__init__(pricingDate if pricingDate else pd.Timestamp.today())
 
         # Probabilités (communes à tout l’arbre)
         forward_1 = np.exp(self.market.r * self.delta_t) * self.market.S0
@@ -54,6 +24,10 @@ class TrinomialTree:
             / ((1 - self.alpha) * (self.alpha**(-2) - 1))
         )
         self.p_up = self.p_down / self.alpha
+
+        # vérification des probabilités
+        self.check_probability(self.p_down, "p_down")
+        self.check_probability(self.p_up, "p_up")
         self.p_mid = 1 - self.p_up - self.p_down
 
         # rajout de la construction de l'arbre
