@@ -16,7 +16,7 @@ class Option:
         self.T = T
 
 class Node:
-    def __init__(self, S, proba, up, down, next_up, next_mid, next_down):
+    def __init__(self, S, proba, up=None, down=None, next_up=None, next_mid=None, next_down=None):
         self.S = S      # Prix du sous-jacent au nœud
         self.proba = proba  # Probabilité d'atteindre ce nœud
         self.up = up    # Nœud "up" frère
@@ -59,73 +59,100 @@ class TrinomialTree:
         # rajout de la construction de l'arbre
         self.root = self._build_tree()
 
+    def _link_columns(self, next_mid, prev_mid):
+        """
+        On fait un pont entre la colonne t (centrée sur prev_mid)
+        et la colonne t+1 (centrée sur next_mid).
+        On remplit next_up / next_down pour tous les nœuds de la colonne t.
+        """
+        # centre (niveau 0)
+        if next_mid.up:
+            prev_mid.next_up = next_mid.up
+            next_mid.up.next_mid = next_mid
+        if next_mid.down:
+            prev_mid.next_down = next_mid.down
+            next_mid.down.next_mid = next_mid
 
+        # côté haut (niveaux +1, +2, ...)
+        # - next_up: (+k à t) -> (+(k+1) à t+1)
+        p_prev = prev_mid.up
+        p_next_up = next_mid.up.up if next_mid.up else None
+        while p_prev and p_next_up:
+            p_prev.next_up = p_next_up
+            p_prev = p_prev.up
+            p_next_up = p_next_up.up
+
+        # - next_down: (+k à t) -> (+(k-1) à t+1) ; pour k=1 -> next_mid
+        p_prev = prev_mid.up
+        q_next_down = next_mid
+        while p_prev and q_next_down:
+            p_prev.next_down = q_next_down
+            p_prev = p_prev.up
+            q_next_down = q_next_down.up
+
+        # côté bas (niveaux -1, -2, ...)
+        # - next_up: (-k à t) -> (-(k-1) à t+1) ; pour k=1 -> next_mid
+        p_prev = prev_mid.down
+        q_next_up = next_mid
+        while p_prev and q_next_up:
+            p_prev.next_up = q_next_up
+            p_prev = p_prev.down
+            q_next_up = q_next_up.down
+
+        # - next_down: (-k à t) -> (-(k+1) à t+1)
+        p_prev = prev_mid.down
+        p_next_down = next_mid.down.down if next_mid.down else None
+        while p_prev and p_next_down:
+            p_prev.next_down = p_next_down
+            p_prev = p_prev.down
+            p_next_down = p_next_down.down
+
+        # 5) Avancer la "colonne courante"
+        prev_mid = next_mid
 
     def _build_tree(self):
 
-        # Créer le nœud racine
-        root = Node(
-            S=self.market.S0,
-            proba=1.0,
-            up=None,
-            down=None,
-            next_up=None,
-            next_mid=None,
-            next_down=None
-        )
+        # racine
+        root = Node(S=self.market.S0, proba=1.0)
+        prev_mid = root  # milieu de la colonne t
 
-        current_node = root
-
-        for i in range(self.N + 1):
-            
+        # chaque itération fabrique UNE colonne t+1
+        for i in range(self.N):
+            # créer le milieu de la colonne t+1
             next_mid = Node(
-                S=current_node.S*np.exp(self.market.r * self.delta_t),
-                proba=current_node.proba * self.p_mid,
-                up=None,
-                down=None,
-                next_up=None,
-                next_mid=None,
-                next_down=None
+                S=prev_mid.S * np.exp(self.market.r * self.delta_t),
+                proba=prev_mid.proba * self.p_mid,
             )
+            prev_mid.next_mid = next_mid  # lien mid -> mid
 
-            current_node.next_mid = next_mid
+            # construis la branche up de la colonne t+1 (chaînée par .up/.down)
             current_node = next_mid
-
             n = 0
-            while n<=i:
+            while n <= i:
                 up = Node(
                     S=current_node.S * self.alpha,
                     proba=current_node.proba * self.p_up,
-                    up=None,
-                    down=current_node,
-                    next_up=current_node.next_mid.up if current_node.next_mid else None,
-                    next_mid=None,
-                    next_down=current_node.next_mid.down if current_node.next_mid else None
                 )
-
-                current_node.up = up
+                up.down = current_node     # frère inférieur
+                current_node.up = up       # frère supérieur
                 current_node = up
-
                 n += 1
 
-            # on revient au milieu
+            # construis la branche down de la colonne t+1
             current_node = next_mid
-
-            n=0
-            while n<=i:
+            n = 0
+            while n <= i:
                 down = Node(
                     S=current_node.S / self.alpha,
                     proba=current_node.proba * self.p_down,
-                    up=current_node,
-                    down=None,
-                    next_up=None,
-                    next_mid=None,
-                    next_down=None
                 )
-                current_node.down = down
+                down.up = current_node       # frère supérieur
+                current_node.down = down     # frère inférieur
                 current_node = down
-
                 n += 1
+
+            # lie la colonne t avec la colonne t+1
+            self._link_columns(next_mid, prev_mid)
 
         return root
 
