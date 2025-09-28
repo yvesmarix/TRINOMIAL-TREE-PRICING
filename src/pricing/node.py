@@ -1,79 +1,72 @@
 import numpy as np
 
+
 class Node:
-    def __init__(self, S, proba, up=None, down=None, next_up=None, next_mid=None, next_down=None, prev_mid=None, option_value=None):
-        self.S = S      # Prix du sous-jacent au nœud
+    def __init__(
+        self,
+        S,
+        proba,
+        up=None,
+        down=None,
+        next_up=None,
+        next_mid=None,
+        next_down=None,
+        prev_mid=None,
+        option_value=None,
+    ):
+        self.S = S  # Prix du sous-jacent au nœud
         self.proba = proba  # Probabilité d'atteindre ce nœud
-        self.up = up    # Nœud "up" frère
-        self.down = down# Nœud "down" frère
-        self.next_up = next_up    # Nœud "up" prochain
+        self.up = up  # Nœud "up" frère
+        self.down = down  # Nœud "down" frère
+        self.next_up = next_up  # Nœud "up" prochain
         self.next_mid = next_mid  # Nœud "mid" prochain
-        self.next_down = next_down# Nœud "down" prochain
+        self.next_down = next_down  # Nœud "down" prochain
         self.prev_mid = prev_mid  # Nœud "mid" précédentid
         self.option_value = option_value  # Valeur de l'option au nœud
         self.tree = None
-        
-        
+
         # il faudra rajouter option value ici pour le pricing
         # on doit pouvoir faire tree.root.price(option)
-    def price(self, option = None):
-        """
-        Calcule le prix de l’option en utilisant l’arbre trinomial.
-        """
-        if option is None:
-            option = self.option
 
-        # on calcule les payoffs aux feuilles
+    def price(self, option) -> float:
+        """
+        On donne un objet option à la racine et on reçoit la valeur de l'option
+        qui a traversé l'arbre backward.
+        """
+
+        # on va tout en bas
         node = self.tree.last_mid
+        while node.down:
+            node = node.down
+
+        # on calcul les payoffs finaux
         while node:
             node.option_value = option.payoff(node.S)
             node = node.up
 
-        node = self.tree.last_mid.down
-        while node:
-            node.option_value = option.payoff(node.S)
-            node = node.down
+        # on va propager ces valeurs avec les probas à chaque noeuds
+        col = self.tree.last_mid
+        while col.prev_mid:
+            col = col.prev_mid
 
-        node = self.tree.last_mid
-        # on envoie la valeur aux nœuds parents
-        for i in range(self.tree.N):
-            current = node
-            n=0
-            if node.prev_mid is not None:  # pas une feuille
-                while current.next_up is not None and current.next_down is not None and n<=i:
-                    expected_value = (
-                    self.tree.p_up * current.next_up.option_value +
-                    self.tree.p_mid * current.next_mid.option_value +
-                    self.tree.p_down * current.next_down.option_value
-                    ) * np.exp(-self.tree.market.r * self.tree.delta_t)
+            # on va en bas
+            n = col
+            while n.down:
+                n = n.down
 
-                    # valeur au noeud courant
-                    current.option_value = expected_value
+            # on remonte la colonne
+            while n:
+                # valeurs des enfants up/mid/down
+                price = np.exp(-self.tree.market.r * self.tree.delta_t) * (
+                    (self.tree.p_up * n.next_up.option_value if n.next_up else 0.0) +
+                    (self.tree.p_mid * n.next_mid.option_value if n.next_mid else 0.0) +
+                    (self.tree.p_down * n.next_down.option_value if n.next_down else 0.0)
+                )
 
-                    # on monte d'un noeud
-                    current = current.up
-
-                    # incrément pour ne passer au noeud du dessus alors qu'il n'existe pas
-                    n += i
-
-                n=0
-                # on restart au milieu
-                while current.next_up is not None and current.next_down is not None and n<=i:
-                    expected_value = (
-                    self.tree.p_up * current.next_up.option_value +
-                    self.tree.p_mid * current.next_mid.option_value +
-                    self.tree.p_down * current.next_down.option_value
-                    ) * np.exp(-self.tree.market.r * self.tree.delta_t)
-
-                    # valeur au noeud courant
-                    current.option_value = expected_value
-
-                    # on monte d'un noeud
-                    current = current.down
-
-                    # incrément pour ne passer au noeud du dessus alors qu'il n'existe pas
-                    n += i
-
-            node = node.prev_mid  # remonte d’une colonne
-
-        return self.root.option_value
+                if option.option_class == "american":
+                    n.option_value = max(price, option.payoff(n.S))
+                else:
+                    n.option_value = price
+                
+                n = n.up
+        return self.option_value
