@@ -1,6 +1,8 @@
 import numpy as np
-import pandas as pd
-from pricing import BlackScholesPricer, Model, Node
+import datetime as dt
+from pricing import BlackScholesPricer
+from node import Node
+from model import Model
 
 class TrinomialTree(Model):
     def __init__(self, market, option, N, pricingDate=None):
@@ -9,7 +11,7 @@ class TrinomialTree(Model):
         self.N = N
         self.delta_t = option.T / N
         self.alpha = np.exp(market.sigma * np.sqrt(3 * self.delta_t))
-        super().__init__(pricingDate if pricingDate else pd.Timestamp.today())
+        super().__init__(pricingDate if pricingDate else dt.datetime.today())
 
         # Probabilités (communes à tout l’arbre)
         forward_1 = np.exp(self.market.r * self.delta_t) * self.market.S0
@@ -30,106 +32,79 @@ class TrinomialTree(Model):
         self.check_probability(self.p_up, "p_up")
         self.p_mid = 1 - self.p_up - self.p_down
 
+        # mémorise le dernier noeud du milieu créé (utile pour le pricing)
+        self.last_mid = None
+
         # rajout de la construction de l'arbre
         self.root = self._build_tree()
 
-    def _link_columns(self, next_mid, prev_mid):
+    def _link_columns(self, prev_mid: Node, next_mid: Node) -> Node:
         """
-        On fait un pont entre la colonne t (centrée sur prev_mid)
-        et la colonne t+1 (centrée sur next_mid).
-        On remplit next_up / next_down pour tous les nœuds de la colonne t.
+        Relie la colonne t (centrée sur prev_mid) à la colonne t+1 (centrée sur next_mid).
+        Retourne next_mid pour mettre à jour prev_mid dans _build_tree.
         """
-        # centre (niveau 0)
-        if next_mid.up:
-            prev_mid.next_up = next_mid.up
-            next_mid.up.next_mid = next_mid
-        if next_mid.down:
-            prev_mid.next_down = next_mid.down
-            next_mid.down.next_mid = next_mid
+        # centre
+        prev_mid.next_mid = next_mid
+        next_mid.prev_mid = prev_mid
 
-        # côté haut (niveaux +1, +2, ...)
-        # - next_up: (+k à t) -> (+(k+1) à t+1)
-        p_prev = prev_mid.up
-        p_next_up = next_mid.up.up if next_mid.up else None
-        while p_prev and p_next_up:
-            p_prev.next_up = p_next_up
-            p_prev = p_prev.up
-            p_next_up = p_next_up.up
+        # diagonales du noeud centrale de la colonne t
+        if next_mid.up: prev_mid.next_up = next_mid.up
+        if next_mid.down: prev_mid.next_down = next_mid.down
 
-        # - next_down: (+k à t) -> (+(k-1) à t+1) ; pour k=1 -> next_mid
-        p_prev = prev_mid.up
-        q_next_down = next_mid
-        while p_prev and q_next_down:
-            p_prev.next_down = q_next_down
-            p_prev = p_prev.up
-            q_next_down = q_next_down.up
+        # on descend tout en bas de la colonne t
+        t, t_1 = prev_mid, next_mid
+        while t.down and t_1.down:
+            t = t.down
+            t_1 = t_1.down
 
-        # côté bas (niveaux -1, -2, ...)
-        # - next_up: (-k à t) -> (-(k-1) à t+1) ; pour k=1 -> next_mid
-        p_prev = prev_mid.down
-        q_next_up = next_mid
-        while p_prev and q_next_up:
-            p_prev.next_up = q_next_up
-            p_prev = p_prev.down
-            q_next_up = q_next_up.down
+        # on passe de t à t+1
+        t, t_1 = t.up, t_1.up
+        while t and t_1:
+            t.next_mid = t_1; t_1.prev_mid = t
+            if t_1.up: t.next_up = t_1.up
+            if t_1.down: t.next_down = t_1.down
+            t, t_1 = t.up, t_1.up
 
-        # - next_down: (-k à t) -> (-(k+1) à t+1)
-        p_prev = prev_mid.down
-        p_next_down = next_mid.down.down if next_mid.down else None
-        while p_prev and p_next_down:
-            p_prev.next_down = p_next_down
-            p_prev = p_prev.down
-            p_next_down = p_next_down.down
+        return next_mid
 
-        # 5) Avancer la "colonne courante"
-        prev_mid = next_mid
-
-    def _build_tree(self):
-
+    def _build_tree(self) -> Node:
+        """
+        On fait la méthode du remplissage verticale.
+        On part du milieu et on va de haut en bas.
+        """
         # racine
-        root = Node(S=self.market.S0, proba=1.0)
-        prev_mid = root  # milieu de la colonne t
+        # centre colonne t=0
+        root = Node(S=self.market.S0, proba=1.0) 
+        prev_mid = root
 
-        # chaque itération fabrique UNE colonne t+1
         for i in range(self.N):
             # créer le milieu de la colonne t+1
-            next_mid = Node(
-                S=prev_mid.S * np.exp(self.market.r * self.delta_t),
-                proba=prev_mid.proba * self.p_mid,
-            )
-            prev_mid.next_mid = next_mid  # lien mid -> mid
+            mid_price = prev_mid.S * np.exp(self.market.r * self.delta_t)
+            next_mid = Node(S=mid_price, proba=prev_mid.proba*self.p_mid)
 
-            # construis la branche up de la colonne t+1 (chaînée par .up/.down)
-            current_node = next_mid
-            n = 0
-            while n <= i:
-                up = Node(
-                    S=current_node.S * self.alpha,
-                    proba=current_node.proba * self.p_up,
-                )
-                up.down = current_node     # frère inférieur
-                current_node.up = up       # frère supérieur
-                current_node = up
-                n += 1
+            # partie haute
+            current = next_mid
+            for _ in range(i+1):
+                up = Node(S=current.S * self.alpha, proba=current.proba*self.p_up)
+                up.down = current
+                current.up = up
+                current = up
 
-            # construis la branche down de la colonne t+1
-            current_node = next_mid
-            n = 0
-            while n <= i:
-                down = Node(
-                    S=current_node.S / self.alpha,
-                    proba=current_node.proba * self.p_down,
-                )
-                down.up = current_node       # frère supérieur
-                current_node.down = down     # frère inférieur
-                current_node = down
-                n += 1
+            # partie basse
+            current = next_mid
+            for _ in range(i+1):
+                down = Node(S=current.S / self.alpha, proba=current.proba*self.p_down)
+                down.up = current
+                current.down = down
+                current = down
 
-            # lie la colonne t avec la colonne t+1
-            self._link_columns(next_mid, prev_mid)
+            # relie les deux colonnes
+            prev_mid = self._link_columns(prev_mid, next_mid)
 
+        self.last_mid = prev_mid
+        root.tree = self
         return root
-
+    
     def bs_convergence_by_step(self, bs_price: float,max_n: int = 1000, step: int = 10):
         """
         Calcule les prix de l’option pour différentes valeurs de N
