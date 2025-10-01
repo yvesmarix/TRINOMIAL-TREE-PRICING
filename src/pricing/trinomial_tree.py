@@ -45,7 +45,6 @@ class TrinomialTree(Model):
         """
         # centre
         prev_mid.next_mid = next_mid
-        next_mid.prev_mid = prev_mid
 
         # diagonales du noeud centrale de la colonne t
         if next_mid.up:
@@ -64,8 +63,6 @@ class TrinomialTree(Model):
             t.next_mid = t_1
             t.next_up = t_1.up if t_1.up else None
             t.next_down = t_1.down if t_1.down else None
-            if t_1.prev_mid is None:
-                t_1.prev_mid = t
             t, t_1 = t.up, t_1.up
 
         return next_mid
@@ -83,7 +80,6 @@ class TrinomialTree(Model):
         for i in range(self.N):
             # créer le milieu de la colonne t+1
             mid_price = prev_mid.S * np.exp(self.market.r * self.delta_t)
-
             next_mid = Node(S=mid_price, proba=prev_mid.proba * self.p_mid)
             # connaissance de l'arbre
             next_mid.tree = self
