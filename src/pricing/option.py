@@ -1,8 +1,10 @@
+import datetime as dt
+
 class Option:
-    def __init__(self, K, option_type, T, option_class):
+    def __init__(self, K: float, maturity: dt.datetime, option_type: str, option_class: str):
         self.K = K
+        self.maturity = maturity
         self.option_type = self.check_option_type(option_type)
-        self.T = T
         self.option_class = self.check_option_class(option_class)
 
     @staticmethod
