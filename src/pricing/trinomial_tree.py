@@ -2,14 +2,13 @@ import numpy as np
 import datetime as dt
 from node import Node
 from model import Model
-from funcs import (compute_forward
-                   , compute_variance
-                   , compute_p_down
-                   , compute_p_up
-                   , compute_p_mid)
+from funcs import compute_forward, compute_variance, compute_probabilities
+
 
 class TrinomialTree(Model):
-    def __init__(self, market, option, N, pruning: bool = False, epsilon = None, pricingDate=None):
+    def __init__(
+        self, market, option, N, pruning: bool = False, epsilon=None, pricingDate=None
+    ):
         self.market = market
         self.option = option
         self.N = N
@@ -18,34 +17,13 @@ class TrinomialTree(Model):
         self.pruning = pruning
         super().__init__(pricingDate if pricingDate else dt.datetime.today())
 
-    def _compute_parameters(self) -> None:
-        # on calcule delta t
-        self.delta_t = (self.option.maturity - self.pricing_date).days / self.N / 365
-
-        # calcul de alpha
-        self.alpha = np.exp(self.market.sigma * np.sqrt(3 * self.delta_t))
-
-        # Probabilités
-        forward = compute_forward(self.market.S0, self.market.r, self.delta_t)
-        variance = compute_variance(self.market.S0, self.market.r
-                                      , self.delta_t
-                                      , self.market.sigma)
-
-        self.p_down = compute_p_down(forward, forward, variance, self.alpha)
-        self.p_up = compute_p_up(self.p_down, self.alpha)
-
-        # vérification des probabilités
-        self.check_probability(self.p_down, "p_down")
-        self.check_probability(self.p_up, "p_up")
-        self.p_mid = compute_p_mid(self.p_down, self.p_up)
-
     def price(self, build_tree: bool = False) -> float:
 
         # pricing à partir de la racine
         if build_tree or not hasattr(self, "root") or self.root is None:
-            self._compute_parameters()
+            self._compute_parameters(self.market.S0, dividend=False)
             self.root = self._build_tree()
-        
+
         return self.root.price_recursive(self.option)
 
     def _build_tree(self) -> Node:
@@ -54,61 +32,132 @@ class TrinomialTree(Model):
         On part du milieu et on va de haut en bas.
         """
         # racine
-        # centre colonne t=0
         root = Node(S=self.market.S0, proba=1.0)
         prev_mid = root
 
+        # étape ex-div (ou None)
+        div_step = self._compute_div_step()
+        postdiv_set = False
+
         for i in range(self.N):
-            # gestion des etapes restantes pour le filtrage
-            step_left = self.N - (i+1)
+            step_left = self.N - (i + 1)
+            has_div = getattr(self.market, "dividend", 0) > 0
+            is_exdiv = (div_step is not None and (i + 1) == div_step and has_div)
 
-            # créer le milieu de la colonne t+1
-            mid_price = prev_mid.S * np.exp(self.market.r * self.delta_t)
-            next_mid = Node(S=mid_price, proba=prev_mid.proba * self.p_mid)
-            # connaissance de l'arbre
-            next_mid.tree = self
+            if is_exdiv:
+                # seuil de faisabilité du mode "probas-only"
+                forward = compute_forward(prev_mid.S, self.market.r, self.delta_t)
+                Dmax = forward * (1.0 - 1.0 / self.alpha)
 
-            # partie haute
-            current = next_mid
-            for _ in range(i + 1):
-                # futures attributs du noeud up
-                s_up = current.S * self.alpha
-                p_up = current.proba * self.p_up
+                if self.market.dividend >= Dmax - 1e-12:
+                    # on shift la colonne de D
+                    next_mid = self._create_next_mid(prev_mid)
+                    self._extend_upper_part(next_mid, i, step_left)
+                    self._extend_lower_part(next_mid, i, step_left)
 
-                # gestion du filtre par contribution au prix
-                if self.pruning and self.__should_filter(s_up, step_left):
-                    break
+                    # soustrait D
+                    self._div_shifter(next_mid)
 
-                up = Node(S=s_up, proba=p_up)
-                # connaissance de l'arbre
-                up.tree = self
-                up.down = current
-                current.up = up
-                current = up
+                    # lie les colonnes (next_*)
+                    prev_mid = self._link_columns(prev_mid, next_mid)
 
-            # partie basse
-            current = next_mid
-            for _ in range(i + 1):
-                # futures attributs du noeud down
-                s_down = current.S / self.alpha
-                p_down = current.proba * self.p_down
+                    # calibrage post-div (UNE fois) pour le reste des pas
+                    if not postdiv_set:
+                        self._compute_parameters(prev_mid.S, dividend=False)
+                        postdiv_set = True
+                    continue
+                else:
+                    # gestion du div avec les probas au pas ex-div 
+                    self._compute_parameters(prev_mid.S, dividend=True)
 
-                # gestion du filtre par contribution au prix
-                if self.pruning and self.__should_filter(s_down, step_left):
-                    break
-
-                down = Node(S=s_down, proba=p_down)
-                # connaissance de l'arbre
-                down.tree = self
-                down.up = current
-                current.down = down
-                current = down
-
-            # relie les deux colonnes
+            # construction standard avec les probas courantes
+            next_mid = self._create_next_mid(prev_mid)
+            self._extend_upper_part(next_mid, i, step_left)
+            self._extend_lower_part(next_mid, i, step_left)
             prev_mid = self._link_columns(prev_mid, next_mid)
+
+            # bascule post-div juste après l’ex-date (UNE fois)
+            if is_exdiv and not postdiv_set:
+                self._compute_parameters(prev_mid.S, dividend=False)
+                postdiv_set = True
 
         root.tree = self
         return root
+
+    def _compute_parameters(self, S: float, dividend: bool) -> None:
+        # on calcule delta t
+        self.delta_t = (self.option.maturity - self.pricing_date).days / self.N / 365
+
+        # calcul de alpha
+        self.alpha = np.exp(self.market.sigma * np.sqrt(3 * self.delta_t))
+
+        # Probabilités
+        forward = compute_forward(S, self.market.r, self.delta_t)
+        if dividend:
+            esperance = forward - self.market.dividend
+        else:
+            esperance=forward
+        variance = compute_variance(
+            S, self.market.r, self.delta_t, self.market.sigma
+        )
+
+        self.p_down, self.p_up, self.p_mid = compute_probabilities(
+            esperance, forward, variance, self.alpha, dividend
+        )
+
+        # vérification des probabilités
+        self._assert_probabilities(self.p_down, self.p_up, self.p_mid)
+
+    def _assert_probabilities(self, p_down, p_up, p_mid):
+        self.check_probability(p_down, "p_down")
+        self.check_probability(p_up, "p_up")
+        self.check_probability(p_mid, "p_mid")
+        if not np.isclose(p_down + p_mid + p_up, 1.0, atol=1e-12):
+            raise AssertionError("La somme des probabilités est différente de 1.")
+
+    def _compute_div_step(self):
+        """Calcule l'index d'étape du versement de dividende, ou None s'il n'y en a pas."""
+        if not getattr(self.market, "dividend_date", None) or not getattr(self.market, "dividend", 0):
+            return None
+        years = (self.market.dividend_date - self.pricing_date).days / 365
+        div_step = int(np.floor(years / self.delta_t + 1e-12))
+        return max(1, min(div_step, self.N))
+
+    def _create_next_mid(self, prev_mid: Node) -> Node:
+        """Crée le noeud central de la colonne t+1 à partir de prev_mid (colonne t)."""
+        mid_price = prev_mid.S * np.exp(self.market.r * self.delta_t)
+        next_mid = Node(S=mid_price, proba=prev_mid.proba * self.p_mid)
+        next_mid.tree = self
+        return next_mid
+
+    def _extend_upper_part(self, next_mid: Node, i: int, step_left: int) -> None:
+        """Construit la partie haute de la colonne t+1 à partir du milieu."""
+        current = next_mid
+        for _ in range(i + 1):
+            s_up = current.S * self.alpha
+            p_up = current.proba * self.p_up
+            if self.pruning and self.__should_filter(s_up, step_left):
+                break
+            up = Node(S=s_up, proba=p_up)
+            up.tree = self
+            up.down = current
+            current.up = up
+            current = up
+
+    def _extend_lower_part(self, next_mid: Node, i: int, step_left: int) -> None:
+        """Construit la partie basse de la colonne t+1 à partir du milieu."""
+        current = next_mid
+        for _ in range(i + 1):
+            s_down = current.S / self.alpha
+            p_down = current.proba * self.p_down
+            if self.pruning and self.__should_filter(s_down, step_left):
+                break
+            down = Node(S=s_down, proba=p_down)
+            down.tree = self
+            down.up = current
+            current.down = down
+            current = down
+
 
     def _link_columns(self, prev_mid: Node, next_mid: Node) -> Node:
         """
@@ -138,7 +187,7 @@ class TrinomialTree(Model):
             t, t_1 = t.up, t_1.up
 
         return next_mid
-    
+
     def __upper_filter(self, S, step_left):
         """
         On va venir filtrer les noeuds qui ont une contribution faible à partir d'une
@@ -148,24 +197,33 @@ class TrinomialTree(Model):
         # dernière colonne
         if step_left <= 0:
             return self.option.payoff(S)
-        
+
         discount = np.exp(-self.market.r * step_left * self.delta_t)
 
         # borne différentes si call/put
         if self.option.option_type == "call":
-            bound = S * (self.alpha ** step_left)
+            bound = S * (self.alpha**step_left)
             european_bound = discount * max(bound - self.option.K, 0.0)
         else:
-            bound = S / (self.alpha ** step_left)
+            bound = S / (self.alpha**step_left)
             european_bound = max(self.option.K - bound, 0.0)
-        
+
         # gestion option americaine
         if self.option.option_class == "american":
             return max(self.option.payoff(S), european_bound)
         return european_bound
-    
+
     def __should_filter(self, S, step_left):
         if self.epsilon is None:
             return False
         bound = self.__upper_filter(S, step_left)
         return bound < self.epsilon
+    
+    def _div_shifter(self, next_mid: Node) -> None:
+        # shift inline de toute la colonne : S <- max(S - D, 0)
+        top = next_mid
+        while top.up: top = top.up
+        cur = top
+        while cur:
+            cur.S = max(cur.S - self.market.dividend, 0.0)
+            cur = cur.down
