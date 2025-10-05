@@ -25,87 +25,47 @@ class TrinomialTree(Model):
             self.root = self._build_tree()
 
         return self.root.price_recursive(self.option)
-
+    
     def _build_tree(self) -> Node:
         """
-        On fait la méthode du remplissage verticale.
-        On part du milieu et on va de haut en bas.
+        Grille uniforme. Probas constantes (calibrées une fois dans price()).
+        Au pas ex-div, on shift toute la colonne de -D puis on poursuit.
         """
-        # racine
         root = Node(S=self.market.S0, proba=1.0)
         prev_mid = root
 
-        # étape ex-div (ou None)
         div_step = self._compute_div_step()
-        postdiv_set = False
 
         for i in range(self.N):
             step_left = self.N - (i + 1)
-            has_div = getattr(self.market, "dividend", 0) > 0
-            is_exdiv = (div_step is not None and (i + 1) == div_step and has_div)
 
-            if is_exdiv:
-                # seuil de faisabilité du mode "probas-only"
-                forward = compute_forward(prev_mid.S, self.market.r, self.delta_t)
-                Dmax = forward * (1.0 - 1.0 / self.alpha)
-
-                if self.market.dividend >= Dmax - 1e-12:
-                    # on shift la colonne de D
-                    next_mid = self._create_next_mid(prev_mid)
-                    self._extend_upper_part(next_mid, i, step_left)
-                    self._extend_lower_part(next_mid, i, step_left)
-
-                    # soustrait D
-                    self._div_shifter(next_mid)
-
-                    # lie les colonnes (next_*)
-                    prev_mid = self._link_columns(prev_mid, next_mid)
-
-                    # calibrage post-div (UNE fois) pour le reste des pas
-                    if not postdiv_set:
-                        self._compute_parameters(prev_mid.S, dividend=False)
-                        postdiv_set = True
-                    continue
-                else:
-                    # gestion du div avec les probas au pas ex-div 
-                    self._compute_parameters(prev_mid.S, dividend=True)
-
-            # construction standard avec les probas courantes
+            # construire la colonne t+1 avec les probas courantes
             next_mid = self._create_next_mid(prev_mid)
             self._extend_upper_part(next_mid, i, step_left)
             self._extend_lower_part(next_mid, i, step_left)
-            prev_mid = self._link_columns(prev_mid, next_mid)
 
-            # bascule post-div juste après l’ex-date (UNE fois)
-            if is_exdiv and not postdiv_set:
-                self._compute_parameters(prev_mid.S, dividend=False)
-                postdiv_set = True
+            # ex-div : translation cash sur toute la colonne (S <- max(S-D, 0))
+            if div_step is not None and (i + 1) == div_step and getattr(self.market, "dividend", 0) > 0:
+                self._div_shifter(next_mid)
+
+            # relier t -> t+1
+            prev_mid = self._link_columns(prev_mid, next_mid)
 
         root.tree = self
         return root
 
     def _compute_parameters(self, S: float, dividend: bool) -> None:
-        # on calcule delta t
         self.delta_t = (self.option.maturity - self.pricing_date).days / self.N / 365
 
-        # calcul de alpha
         self.alpha = np.exp(self.market.sigma * np.sqrt(3 * self.delta_t))
 
-        # Probabilités
-        forward = compute_forward(S, self.market.r, self.delta_t)
-        if dividend:
-            esperance = forward - self.market.dividend
-        else:
-            esperance=forward
-        variance = compute_variance(
-            S, self.market.r, self.delta_t, self.market.sigma
-        )
+        forward  = compute_forward(S, self.market.r, self.delta_t)
+        esperance = forward - self.market.dividend if dividend else forward
+        variance = compute_variance(S, self.market.r, self.delta_t, self.market.sigma)
 
         self.p_down, self.p_up, self.p_mid = compute_probabilities(
             esperance, forward, variance, self.alpha, dividend
         )
-
-        # vérification des probabilités
         self._assert_probabilities(self.p_down, self.p_up, self.p_mid)
 
     def _assert_probabilities(self, p_down, p_up, p_mid):
@@ -157,7 +117,6 @@ class TrinomialTree(Model):
             down.up = current
             current.down = down
             current = down
-
 
     def _link_columns(self, prev_mid: Node, next_mid: Node) -> Node:
         """
