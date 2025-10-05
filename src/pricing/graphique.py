@@ -69,4 +69,4 @@ def plot_tree(
     ax.set_ylabel("Underlying S")
     ax.margins(x=0.02, y=0.05)
     plt.tight_layout()
-    return fig
+    

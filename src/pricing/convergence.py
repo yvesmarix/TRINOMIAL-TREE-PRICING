@@ -12,7 +12,7 @@ def bs_convergence_by_step(
     N_values = list(range(step, max_n + 1, step))
     for N in N_values:
         tree = TrinomialTree(market, option, N=N)
-        prices.append(tree.root.price(option))
+        prices.append(tree.price(option))
 
     price_dataset = pd.DataFrame(
         {
@@ -38,7 +38,7 @@ def bs_convergence_by_strike(market, option, K_values: list, N: int):
     bs_prices = []
     for K in K_values:
         option.K = K
-        tree_prices.append(TrinomialTree(market, option, N=N).root.price(option))
+        tree_prices.append(TrinomialTree(market, option, N=N).price(option))
         bs_prices.append(
             BlackScholesPricer().price(
                 S=market.S0,
