@@ -32,27 +32,70 @@ class TrinomialTree(Model):
         Au pas ex-div, on shift toute la colonne de -D puis on poursuit.
         """
         root = Node(S=self.market.S0, proba=1.0)
-        prev_mid = root
+        t = root
 
         div_step = self._compute_div_step()
 
         for i in range(self.N):
             step_left = self.N - (i + 1)
 
-            # construire la colonne t+1 avec les probas courantes
-            next_mid = self._create_next_mid(prev_mid)
-            self._extend_upper_part(next_mid, i, step_left)
-            self._extend_lower_part(next_mid, i, step_left)
+            # on garde le noeud du centre
+            trunc_node = t
 
-            # ex-div : translation cash sur toute la colonne (S <- max(S-D, 0))
-            if div_step is not None and (i + 1) == div_step and getattr(self.market, "dividend", 0) > 0:
-                self._div_shifter(next_mid)
+            # on constuit la partie de haut pour la colonne t et t+1
+            t1 = self._create_next_mid(t)
+            trunc_node_t_1 = t1
+            self._extend_upper_part(t, t1, i, step_left)
 
-            # relier t -> t+1
-            prev_mid = self._link_columns(prev_mid, next_mid)
+            # on construit la partie du dessous
+            t = trunc_node; t1 = trunc_node_t_1
+            self._extend_lower_part(t, t1, i, step_left)
+
+            # on passe à la colonne suivante
+            t = trunc_node_t_1
 
         root.tree = self
         return root
+
+    def _create_next_mid(self, prev_mid: Node) -> Node:
+        """Crée le noeud central de la colonne t+1 à partir de prev_mid (colonne t)."""
+        mid_price = prev_mid.S * np.exp(self.market.r * self.delta_t)
+        next_mid = Node(S=mid_price, proba=prev_mid.proba * self.p_mid)
+        next_mid.tree = self
+        return next_mid
+
+    def _extend_upper_part(self, t: Node, t1: Node, i: int, step_left: int) -> None:
+        """Construit la partie haute de la colonne t et t+1 à partir du milieu.
+        Ajout du lien next_down (si déjà disponible) vers le noeud down de la colonne t+1.
+        Ce lien sera complété après la construction de la partie basse."""
+        for _ in range(i + 1):
+            t.next_mid = t1
+            t1_s_up = t1.S * self.alpha
+            t1_p_up = t1.proba * self.p_up
+            up = Node(S=t1_s_up, proba=t1_p_up)
+            up.tree = self
+            up.down = t1
+            t.next_up = t1.up = up
+            # ajout du lien next_down (sera None tant que la partie basse n'est pas construite)
+            t.next_down = t1.down
+            t, t1 = t.up, t1.up
+
+    def _extend_lower_part(self, t: Node, t1: Node, i: int, step_left: int) -> None:
+        """Construit la partie basse de la colonne t+1 à partir du milieu, et complète les next_down manquants en haut."""
+        for _ in range(i + 1):
+            t.next_mid = t1
+            t.next_up = t1.up
+            t1_s_down = t1.S / self.alpha
+            t1_p_down = t1.proba * self.p_down
+            down = Node(S=t1_s_down, proba=t1_p_down)
+            down.tree = self
+            down.up = t1
+            t.next_down = t1.down = down
+            # si le noeud juste au-dessus n'a pas encore son next_down (ajouté en upper mais None), on le met à jour
+            if t.up and (t.up.next_down is None):
+                t.up.next_down = t1.down
+            t, t1 = t.down, t1.down
+
 
     def _compute_parameters(self, S: float, dividend: bool) -> None:
         self.delta_t = (self.option.maturity - self.pricing_date).days / self.N / 365
@@ -82,70 +125,6 @@ class TrinomialTree(Model):
         years = (self.market.dividend_date - self.pricing_date).days / 365
         div_step = int(np.floor(years / self.delta_t + 1e-12))
         return max(1, min(div_step, self.N))
-
-    def _create_next_mid(self, prev_mid: Node) -> Node:
-        """Crée le noeud central de la colonne t+1 à partir de prev_mid (colonne t)."""
-        mid_price = prev_mid.S * np.exp(self.market.r * self.delta_t)
-        next_mid = Node(S=mid_price, proba=prev_mid.proba * self.p_mid)
-        next_mid.tree = self
-        return next_mid
-
-    def _extend_upper_part(self, next_mid: Node, i: int, step_left: int) -> None:
-        """Construit la partie haute de la colonne t+1 à partir du milieu."""
-        current = next_mid
-        for _ in range(i + 1):
-            s_up = current.S * self.alpha
-            p_up = current.proba * self.p_up
-            if self.pruning and self.__should_filter(s_up, step_left):
-                break
-            up = Node(S=s_up, proba=p_up)
-            up.tree = self
-            up.down = current
-            current.up = up
-            current = up
-
-    def _extend_lower_part(self, next_mid: Node, i: int, step_left: int) -> None:
-        """Construit la partie basse de la colonne t+1 à partir du milieu."""
-        current = next_mid
-        for _ in range(i + 1):
-            s_down = current.S / self.alpha
-            p_down = current.proba * self.p_down
-            if self.pruning and self.__should_filter(s_down, step_left):
-                break
-            down = Node(S=s_down, proba=p_down)
-            down.tree = self
-            down.up = current
-            current.down = down
-            current = down
-
-    def _link_columns(self, prev_mid: Node, next_mid: Node) -> Node:
-        """
-        Relie la colonne t (centrée sur prev_mid) à la colonne t+1 (centrée sur next_mid).
-        Retourne next_mid pour mettre à jour prev_mid dans _build_tree.
-        """
-        # centre
-        prev_mid.next_mid = next_mid
-
-        # diagonales du noeud centrale de la colonne t
-        if next_mid.up:
-            prev_mid.next_up = next_mid.up
-        if next_mid.down:
-            prev_mid.next_down = next_mid.down
-
-        # on descend tout en bas de la colonne t
-        t, t_1 = prev_mid, next_mid
-        while t.down and t_1.down:
-            t = t.down
-            t_1 = t_1.down
-
-        # on passe de t à t+1
-        while t and t_1:
-            t.next_mid = t_1
-            t.next_up = t_1.up if t_1.up else None
-            t.next_down = t_1.down if t_1.down else None
-            t, t_1 = t.up, t_1.up
-
-        return next_mid
 
     def __upper_filter(self, S, step_left):
         """
