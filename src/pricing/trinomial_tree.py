@@ -24,7 +24,7 @@ class TrinomialTree(Model):
             self._compute_parameters(self.market.S0, dividend=False)
             self.root = self._build_tree()
 
-        return self.root.price_recursive(self.option)
+        return self.root.price_backward(self.option)
     
     def _build_tree(self) -> Node:
         """
@@ -68,16 +68,25 @@ class TrinomialTree(Model):
         mid_price = prev_mid.S * np.exp(self.market.r * self.delta_t)
         next_mid = Node(S=mid_price, proba=prev_mid.proba * self.p_mid)
         next_mid.tree = self
+
+        # auto rattachement au centre
+        next_mid.trunc = next_mid; next_mid.prev_trunc = prev_mid
         return next_mid
 
     def _extend_upper_part(self, t: Node, t1: Node, i: int) -> None:
         """Construit la partie haute de la colonne t et t+1 à partir du milieu.
         Ajout du lien next_down (si déjà disponible) vers le noeud down de la colonne t+1.
         Ce lien sera complété après la construction de la partie basse."""
+        # rajout du trunc pour le pricing
+        trunc_t = t; trunc_t1 = t1
+
         for _ in range(i + 1):
             # creation du prochain noeud up
             t1_s_up = t1.S * self.alpha; t1_p_up = t1.proba * self.p_up
             up = Node(S=t1_s_up, proba=t1_p_up); up.tree = self
+
+            # rattachament à la base
+            up.trunc = trunc_t1; up.prev_trunc = trunc_t
             
             t.next_mid = up.down = t1; t.next_up = t1.up = up
             # ajout du lien next_down (sera None tant que la partie basse n'est pas construite)
@@ -87,12 +96,17 @@ class TrinomialTree(Model):
     
     def _extend_lower_part(self, t: Node, t1: Node, i: int) -> None:
         """Construit la partie basse de la colonne t+1 à partir du milieu, et complète les next_down manquants en haut."""
+        # rajout du trunc pour le pricing
+        trunc_t = t; trunc_t1 = t1
         for _ in range(i + 1):
             t.next_mid = t1; t.next_up = t1.up
             
             t1_s_down = t1.S / self.alpha; t1_p_down = t1.proba * self.p_down
             
             down = Node(S=t1_s_down, proba=t1_p_down); down.tree = self; down.up = t1
+            
+            # rattachament à la base
+            down.trunc = trunc_t1; down.prev_trunc = trunc_t
             
             t.next_down = t1.down = down
             # si le noeud juste au-dessus n'a pas encore son next_down (ajouté en upper mais None), on le met à jour

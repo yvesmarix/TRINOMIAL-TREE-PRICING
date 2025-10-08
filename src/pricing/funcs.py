@@ -51,3 +51,14 @@ def compute_probabilities(esperance: float, forward: float
     p_mid = compute_p_mid(p_down, p_up)
 
     return p_down, p_up, p_mid
+
+def iter_column(mid_node):
+    # yield tous les noeuds de la colonne (haut puis bas)
+    n = mid_node
+    while n:
+        yield n
+        n = n.up
+    n = mid_node.down
+    while n:
+        yield n
+        n = n.down
