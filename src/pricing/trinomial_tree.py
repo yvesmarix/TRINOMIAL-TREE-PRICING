@@ -3,7 +3,7 @@ import datetime as dt
 from node import Node
 from model import Model
 from funcs import compute_forward, compute_variance, compute_probabilities
-
+from typing import *
 
 class TrinomialTree(Model):
     def __init__(
@@ -38,21 +38,27 @@ class TrinomialTree(Model):
 
         for i in range(self.N):
             step_left = self.N - (i + 1)
+            dividend = (div_step==step_left and self.market.dividend > 0)
 
-            # on garde le noeud du centre
             trunc_node = t
 
-            # on constuit la partie de haut pour la colonne t et t+1
-            t1 = self._create_next_mid(t)
+            if dividend:
+                # choisir le nœud ancre (nearest) dans l'esperance
+                t1 = self._create_next_trunc(t)
+            else:
+                t1 = self._create_next_mid(t)
+            
             trunc_node_t_1 = t1
-            self._extend_upper_part(t, t1, i, step_left)
+            self._extend_upper_part(t, t1, i)
 
-            # on construit la partie du dessous
             t = trunc_node; t1 = trunc_node_t_1
-            self._extend_lower_part(t, t1, i, step_left)
+            self._extend_lower_part(t, t1, i)
 
-            # on passe à la colonne suivante
             t = trunc_node_t_1
+
+            if dividend:
+                # on revient au schéma standard après le pas ex-div
+                self._compute_parameters(t.S)
 
         root.tree = self
         return root
@@ -64,32 +70,30 @@ class TrinomialTree(Model):
         next_mid.tree = self
         return next_mid
 
-    def _extend_upper_part(self, t: Node, t1: Node, i: int, step_left: int) -> None:
+    def _extend_upper_part(self, t: Node, t1: Node, i: int) -> None:
         """Construit la partie haute de la colonne t et t+1 à partir du milieu.
         Ajout du lien next_down (si déjà disponible) vers le noeud down de la colonne t+1.
         Ce lien sera complété après la construction de la partie basse."""
         for _ in range(i + 1):
-            t.next_mid = t1
-            t1_s_up = t1.S * self.alpha
-            t1_p_up = t1.proba * self.p_up
-            up = Node(S=t1_s_up, proba=t1_p_up)
-            up.tree = self
-            up.down = t1
-            t.next_up = t1.up = up
+            # creation du prochain noeud up
+            t1_s_up = t1.S * self.alpha; t1_p_up = t1.proba * self.p_up
+            up = Node(S=t1_s_up, proba=t1_p_up); up.tree = self
+            
+            t.next_mid = up.down = t1; t.next_up = t1.up = up
             # ajout du lien next_down (sera None tant que la partie basse n'est pas construite)
             t.next_down = t1.down
-            t, t1 = t.up, t1.up
 
-    def _extend_lower_part(self, t: Node, t1: Node, i: int, step_left: int) -> None:
+            t, t1 = t.up, t1.up
+    
+    def _extend_lower_part(self, t: Node, t1: Node, i: int) -> None:
         """Construit la partie basse de la colonne t+1 à partir du milieu, et complète les next_down manquants en haut."""
         for _ in range(i + 1):
-            t.next_mid = t1
-            t.next_up = t1.up
-            t1_s_down = t1.S / self.alpha
-            t1_p_down = t1.proba * self.p_down
-            down = Node(S=t1_s_down, proba=t1_p_down)
-            down.tree = self
-            down.up = t1
+            t.next_mid = t1; t.next_up = t1.up
+            
+            t1_s_down = t1.S / self.alpha; t1_p_down = t1.proba * self.p_down
+            
+            down = Node(S=t1_s_down, proba=t1_p_down); down.tree = self; down.up = t1
+            
             t.next_down = t1.down = down
             # si le noeud juste au-dessus n'a pas encore son next_down (ajouté en upper mais None), on le met à jour
             if t.up and (t.up.next_down is None):
@@ -97,7 +101,7 @@ class TrinomialTree(Model):
             t, t1 = t.down, t1.down
 
 
-    def _compute_parameters(self, S: float, dividend: bool) -> None:
+    def _compute_parameters(self, S: float, S1_mid: float = None, dividend: bool = False) -> None:
         self.delta_t = (self.option.maturity - self.pricing_date).days / self.N / 365
 
         self.alpha = np.exp(self.market.sigma * np.sqrt(3 * self.delta_t))
@@ -107,7 +111,7 @@ class TrinomialTree(Model):
         variance = compute_variance(S, self.market.r, self.delta_t, self.market.sigma)
 
         self.p_down, self.p_up, self.p_mid = compute_probabilities(
-            esperance, forward, variance, self.alpha, dividend
+            esperance, S1_mid if dividend else forward, variance, self.alpha, dividend
         )
         self._assert_probabilities(self.p_down, self.p_up, self.p_mid)
 
@@ -125,6 +129,30 @@ class TrinomialTree(Model):
         years = (self.market.dividend_date - self.pricing_date).days / 365
         div_step = int(np.floor(years / self.delta_t + 1e-12))
         return max(1, min(div_step, self.N))
+
+    def _create_next_trunc(self, node: Node) -> Node:
+        """
+        Crée le noeud le plus proche de l'espérance comme centre du prochain triplet.
+        """
+        esperance = compute_forward(node.S, self.market.r, self.delta_t) - self.market.dividend
+        # point de départ : le mid sans dividende
+        s_mid = node.S * np.exp(self.market.r * self.delta_t)
+
+        # on ajuste la grille pour encadrer l'espérance
+        while esperance < s_mid / self.alpha:
+            s_mid /= self.alpha
+        while esperance > s_mid * self.alpha:
+            s_mid *= self.alpha
+
+        # crée le nœud central avec ce mid
+        next_mid = Node(S=s_mid, proba=node.proba * self.p_mid)
+        next_mid.tree = self
+
+        # Recalcule les paramètres à partir du bon S_mid
+        self._compute_parameters(node.S, s_mid, dividend=True)
+
+        return next_mid
+
 
     def __upper_filter(self, S, step_left):
         """
@@ -156,12 +184,3 @@ class TrinomialTree(Model):
             return False
         bound = self.__upper_filter(S, step_left)
         return bound < self.epsilon
-    
-    def _div_shifter(self, next_mid: Node) -> None:
-        # shift inline de toute la colonne : S <- max(S - D, 0)
-        top = next_mid
-        while top.up: top = top.up
-        cur = top
-        while cur:
-            cur.S = max(cur.S - self.market.dividend, 0.0)
-            cur = cur.down
