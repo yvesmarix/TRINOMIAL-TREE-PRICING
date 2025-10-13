@@ -1,144 +1,56 @@
-def plot_tree(
-    root_node,
-    size_scale: float = 4000.0,
-    prob_min: float = 0.0,
-    draw_edges: bool = True,
-    max_columns: int | None = None
-):
+import matplotlib.pyplot as plt
+from matplotlib.collections import LineCollection
+
+def plot_tree(tree):
     """
-    Trace un arbre trinomial où la taille de chaque nœud est proportionnelle à sa probabilité.
-    Fonction plus robuste : évite les boucles infinies, gère les nodes manquants et
-    n'essaie de tracer les arêtes que si l'enfant appartient bien à la colonne suivante.
+    Génère un graphique horizontal de l'arbre trinomial avec :
+    - Taille des nœuds proportionnelle à la probabilité du nœud.
+    - Structure claire avec les étapes sur l'axe vertical.
+    
+    :param tree: Instance de TrinomialTree
     """
-    import math
+    fig, ax = plt.subplots(figsize=(16, 12))
+    nodes = []  # Liste des positions des nœuds
+    sizes = []  # Liste des tailles des nœuds
+    edges = []  # Liste des connexions entre les nœuds
 
-    # Si l'objet tree fournit sa propre méthode de collecte de colonnes, on la réutilise (plus fiable).
-    cols = None
-    try:
-        if hasattr(root_node, "tree") and hasattr(root_node.tree, "_collect_columns"):
-            cols = root_node.tree._collect_columns(root_node)
-    except Exception:
-        cols = None
+    def collect_node_data(node, level, x_pos):
+        """
+        Collecte les données des nœuds et des connexions.
+        """
+        if node is None:
+            return
+        
+        # Ajouter le nœud
+        nodes.append((level, x_pos))  # Position horizontale basée sur le niveau
+        sizes.append(max(node.proba * 2000, 10))  # Taille minimale pour éviter les nœuds invisibles
 
-    # Fallback : collecte sûre colonne par colonne
-    if cols is None:
-        cols = []
-        visited = set()
-        cur = root_node
-        step = 0
-        while cur is not None and (max_columns is None or step < max_columns):
-            # remonter au sommet de la colonne
-            top = cur
-            # protégeons contre boucles mal formées
-            seen_climb = set()
-            while getattr(top, "up", None) is not None and id(top) not in seen_climb:
-                seen_climb.add(id(top))
-                top = top.up
+        # Ajouter les connexions
+        if node.next_up:
+            edges.append([(level, x_pos), (level + 1, x_pos + 1)])
+            collect_node_data(node.next_up, level + 1, x_pos + 1)
+        if node.next_mid:
+            edges.append([(level, x_pos), (level + 1, x_pos)])
+            collect_node_data(node.next_mid, level + 1, x_pos)
+        if node.next_down:
+            edges.append([(level, x_pos), (level + 1, x_pos - 1)])
+            collect_node_data(node.next_down, level + 1, x_pos - 1)
 
-            # descendre la colonne en collectant les noeuds (unique par id)
-            col = []
-            n = top
-            while n is not None:
-                nid = id(n)
-                if nid not in visited:
-                    col.append(n)
-                    visited.add(nid)
-                n = getattr(n, "down", None)
-                # protection contre boucle locale
-                if n is not None and id(n) in visited and getattr(n, "down", None) is n:
-                    break
+    # Collecter les données à partir de la racine
+    collect_node_data(tree.root, level=0, x_pos=0)
 
-            if not col:
-                # pas de noeud trouvés -> on arrête la collecte
-                break
+    # Tracer les connexions avec LineCollection
+    line_collection = LineCollection(edges, colors="gray", linewidths=0.5, alpha=0.7)
+    ax.add_collection(line_collection)
 
-            cols.append(col)
+    # Tracer les nœuds
+    nodes_x, nodes_y = zip(*nodes)
+    ax.scatter(nodes_x, nodes_y, s=sizes, color="blue", alpha=0.6)
 
-            next_mid = getattr(cur, "next_mid", None)
-            if next_mid is cur:
-                break
-            cur = next_mid
-            step += 1
-
-    # Construire mapping node_id -> column index pour filtrer les arêtes
-    node_to_col = {}
-    for xi, col in enumerate(cols):
-        for node in col:
-            node_to_col[id(node)] = xi
-
-    # Collections pour le tracé
-    x_positions_by_step = []
-    y_underlying_prices = []
-    node_probabilities = []
-    edge_segments = []
-
-    # Parcourir colonnes et remplir les listes (en triant par S pour cohérence visuelle)
-    for xi, col in enumerate(cols):
-        # Trier la colonne par S décroissant (top -> bottom)
-        try:
-            col_sorted = sorted(col, key=lambda n: float(getattr(n, "S", 0.0) or 0.0), reverse=True)
-        except Exception:
-            col_sorted = col
-
-        for node in col_sorted:
-            try:
-                p = float(getattr(node, "proba", 0.0) or 0.0)
-                s = float(getattr(node, "S", 0.0) or 0.0)
-            except Exception:
-                # ignorer nodes malformés
-                continue
-
-            if not (math.isfinite(p) and math.isfinite(s)):
-                continue
-            if p < prob_min:
-                continue
-
-            x_positions_by_step.append(xi)
-            y_underlying_prices.append(s)
-            node_probabilities.append(p)
-
-            if draw_edges:
-                for link_name in ("next_down", "next_mid", "next_up"):
-                    child = getattr(node, link_name, None)
-                    if child is None:
-                        continue
-                    # Ne tracer l'arête que si l'enfant est bien dans la colonne suivante
-                    cid = id(child)
-                    child_col = node_to_col.get(cid, None)
-                    if child_col is None or child_col != xi + 1:
-                        continue
-                    try:
-                        s_child = float(getattr(child, "S", 0.0) or 0.0)
-                    except Exception:
-                        continue
-                    if not math.isfinite(s_child):
-                        continue
-                    edge_segments.append([(xi, s), (xi + 1, s_child)])
-
-    # Mise à l'échelle des tailles de marqueurs (protection contre division par 0)
-    import numpy as np
-    probabilities_array = np.asarray(node_probabilities)
-    if probabilities_array.size:
-        max_probability = float(np.nanmax(probabilities_array))
-        if not np.isfinite(max_probability) or max_probability <= 0:
-            max_probability = 1.0
-    else:
-        max_probability = 1.0
-    marker_sizes = size_scale * (probabilities_array / max_probability) if probabilities_array.size else []
-
-    # Tracé
-    import matplotlib.pyplot as plt
-    from matplotlib.collections import LineCollection
-    fig, ax = plt.subplots(figsize=(10, 5))
-    if draw_edges and edge_segments:
-        ax.add_collection(LineCollection(edge_segments, linewidths=0.4, alpha=0.25))
-    if len(x_positions_by_step):
-        ax.scatter(
-            x_positions_by_step, y_underlying_prices,
-            s=marker_sizes if len(marker_sizes) else 16, alpha=0.9, linewidths=0
-        )
-    ax.set_xlabel("Step")
-    ax.set_ylabel("Underlying S")
-    ax.margins(x=0.02, y=0.05)
+    # Configurer les axes
+    ax.set_title("Arbre Trinomial (horizontal)", fontsize=14)
+    ax.set_xlabel("Étapes", fontsize=12)
+    ax.set_ylabel("Position horizontale", fontsize=12)
+    ax.grid(True, linestyle="--", alpha=0.5)
     plt.tight_layout()
     plt.show()

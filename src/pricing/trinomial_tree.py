@@ -48,7 +48,7 @@ class TrinomialTree(Model):
             # Probabilités calibrées avant construction (colonne 0 -> 1)
             self._compute_parameters(self.market.S0, dividend=False)
             self.root = self._build_tree()
-        return self.root.price_recursive(self.option)
+        return self.root.price_backward(self.option)
     
     def _build_tree(self) -> Node:
         """
@@ -288,6 +288,10 @@ class TrinomialTree(Model):
 
         next_mid = Node(S=s_mid_best, proba=0.0)
         next_mid.tree = self
+        
+        # rattachement central (utile pour backward)
+        next_mid.trunc = next_mid; next_mid.prev_trunc = node
+        next_mid.proba += node.proba * self.p_mid
 
         # Recalibrage des probas sur le bon mid ex-div
         self._compute_parameters(node.S, s_mid_best, dividend=True)
