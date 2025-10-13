@@ -1,59 +1,40 @@
 import numpy as np
 from scipy.stats import norm
-
-
+import datetime as dt
 class BlackScholesPricer:
     def __init__(self):
         self.N = norm.cdf
 
     def price(
         self,
-        S: int | float,
-        K: int | float,
+        S: float,
+        K: float,
         T: float,
         r: float,
-        q: float,
         sigma: float,
         option_type: str,
-        ):
+        dividend: float = 0.0,
+        dividend_date: float = None
+    ):
         """
-        Calculate option price using Black-Scholes formula
-
-        Parameters:
-        -----------
-        S : float
-            Current stock price
-        K : float
-            Strike price
-        T : float
-            Time to maturity (in years)
-        r : float
-            Risk-free rate (annual)
-        q : dividend yield annualized
-        sigma : float
-            Volatility (annual)
-        option_type : str
-            Type of option - 'call' or 'put'
-
-        Returns:
-        --------
-        float : Option price
+        Black-Scholes avec dividende discret (spot ajusté).
+        S_adj = S - D * exp(-r * t_D)
         """
+        # Spot ajusté
+        if dividend and dividend_date is not None:
+            dividend_date = ((dividend_date - dt.datetime.today()).days / 365)
+            S_adj = S - dividend * np.exp(-r * dividend_date)
+        else:
+            S_adj = S
 
-        # Ensure T is positive
-        T = max(T, 1e-10)  # Avoid division by zero
-
-        d1 = (np.log(S / K) + (r - q + sigma**2 / 2) * T) / (sigma * np.sqrt(T))
+        T = max(T, 1e-10)
+        d1 = (np.log(S_adj / K) + (r + sigma**2 / 2) * T) / (sigma * np.sqrt(T))
         d2 = d1 - sigma * np.sqrt(T)
 
         if option_type.lower() == "call":
-            price = S * np.exp(-q * T) * self.N(d1) - K * np.exp(-r * T) * self.N(
-                d2
-            )
+            price = S_adj * self.N(d1) - K * np.exp(-r * T) * self.N(d2)
         elif option_type.lower() == "put":
-            price = K * np.exp(-r * T) * self.N(-d2) - S * np.exp(-q * T) * self.N(
-                -d1
-            )
+            price = K * np.exp(-r * T) * self.N(-d2) - S_adj * self.N(-d1)
         else:
             raise ValueError("option_type must be 'call' or 'put'")
 

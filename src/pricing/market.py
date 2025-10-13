@@ -1,5 +1,5 @@
 class Market:
-    def __init__(self, S0, r, sigma, dividend, dividend_date):
+    def __init__(self, S0, r, sigma, dividend = None, dividend_date = None):
         self.S0 = S0
         self.r = r
         self.sigma = sigma
