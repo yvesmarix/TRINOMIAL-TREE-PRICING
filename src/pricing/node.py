@@ -1,5 +1,5 @@
 import numpy as np
-from pricing.funcs import iter_column
+from pricing.funcs import iter_column, compute_forward
 
 class Node:
 
@@ -28,27 +28,54 @@ class Node:
         self.option_value = option_value  # Valeur de l'option au nœud
         self.tree = None
 
-    def create_mid(self, tree):
+    def _find_nearest_node(self, tree: object, i: int):
+        
+        esperance = compute_forward(self.S, tree.market.r, tree.delta_t) - tree.market.dividend
+        s_mid = self.S * np.exp(tree.market.r * tree.delta_t)
+
+        # génère plusieurs candidats autour de s_mid
+        candidates = []
+        for k in range(-i-1, i):  # explore de alpha^-i à alpha^i
+            candidate = s_mid * (tree.alpha ** k)
+            candidates.append(candidate)
+        # choisit le candidat le plus proche de l'espérance
+        return min(candidates, key=lambda x: abs(x - esperance))
+
+    def create_mid(self, tree, i: int, dividend: bool = False):
         """
         Crée le nœud 'mid' pour la prochaine colonne.
+
+        Étape ex-div:
+        - On veut que le mid (colonne t+1) soit le plus proche de l'espérance = forward - D.
+        - On génère plusieurs candidats autour de s_mid (par puissances de alpha).
+        - On choisit le candidat le plus proche de l'espérance.
+        - Puis on recalcule les probabilités en mode dividend=True.
         """
+
         # pre-calculation
-        proba_mid = self.proba * self.tree.p_mid
+        proba_mid = self.proba * tree.p_mid
+        s_mid = self._find_nearest_node(tree, i) if dividend else self.S * np.exp(tree.market.r * tree.delta_t)
+
         # check si deja existant
         if self.down is not None and self.down.next_up is not None:
             self.next_mid = self.down.next_up; self.down.next_up.proba += proba_mid
         elif self.up is not None and self.up.next_down is not None:
             self.next_mid = self.up.next_down; self.up.next_down.proba += proba_mid
         else: # creation
-            mid_price = self.S * np.exp(tree.market.r * tree.delta_t)
-            self.next_mid = Node(S=mid_price, proba=self.proba * tree.p_mid)
-            self.next_mid.tree = tree
+            self.next_mid = Node(S=s_mid, proba=proba_mid)
+            self.next_mid.tree = self
+            
+            # rattachement central
             if self.trunc is None:
                 self.trunc = self
-            self.next_mid.trunc = self.next_mid; self.next_mid.prev_trunc = self.trunc  # Rattachement au tronc
+            self.next_mid.trunc = self.next_mid; self.next_mid.prev_trunc = self.trunc
+
+            # recalibration des probas sur le bon mid au pas ex-div
+            if dividend:
+                tree._compute_parameters(self.S, s_mid, dividend=True)
 
 
-    def create_up(self, tree, pruning: bool, is_bord: bool):
+    def create_up(self, tree: object, pruning: bool, is_bord: bool):
         """
         Crée le nœud 'up' pour la prochaine colonne.
         """
@@ -59,7 +86,7 @@ class Node:
         if self.up is not None and self.up.next_mid is not None:
             self.next_up = self.up.next_mid; self.up.next_mid.proba += proba_up
         # pruning
-        elif pruning and proba_up < self.tree.epsilon and is_bord:
+        elif pruning and proba_up < tree.epsilon and is_bord:
             # Accumule la probabilité dans le mid si pruning pour eviter la perte de masse
             self.next_mid.proba += proba_up
         else:
@@ -70,7 +97,7 @@ class Node:
             # Ajout des liens verticaux
             self.next_mid.up = self.next_up; self.next_up.down = self.next_mid
 
-    def create_down(self, tree, pruning: bool, is_bord: bool):
+    def create_down(self, tree: object, pruning: bool, is_bord: bool):
         """
         Crée le nœud 'down' pour la prochaine colonne.
         """
@@ -81,7 +108,7 @@ class Node:
         if self.down is not None and self.down.next_mid is not None:
             self.next_down = self.down.next_mid; self.down.next_mid.proba += proba_down
         # pruning
-        elif pruning and proba_down < self.tree.epsilon and is_bord:
+        elif pruning and proba_down < tree.epsilon and is_bord:
             # Accumule la probabilité dans le mid si pruning pour eviter la perte de masse
             self.next_mid.proba += proba_down
         else:
@@ -90,64 +117,20 @@ class Node:
             self.next_down.prev_trunc = self.trunc
             # Ajout des liens verticaux
             self.next_mid.down = self.next_down; self.next_down.up = self.next_mid
-    
-    def _create_branch(self, tree, kind: str, pruning: bool, is_bord: bool):
-        """
-        Crée une branche 'up' ou 'down' pour la prochaine colonne.
-        kind ∈ {'up', 'down'}
-        """
-        assert kind in ("up", "down")
 
-        # Paramètres dépendant de la direction
-        p = getattr(tree, f"p_{kind}") # p_up ou p_down
-        mult = tree.alpha if kind == "up" else 1 / tree.alpha
-        sibling_attr = "up" if kind == "up" else "down"
-        next_attr = f"next_{kind}" # 'next_up' ou 'next_down'
-
-        proba = self.proba * p
-
-        # réutilisation si un noeud existe déjà via le frère vertical
-        sibling = getattr(self, sibling_attr)
-        if sibling is not None and sibling.next_mid is not None:
-            setattr(self, next_attr, sibling.next_mid)
-            sibling.next_mid.proba += proba
-            return
-
-        # pruning (on accumule dans le mid)
-        if pruning and proba < self.tree.epsilon and is_bord:
-            self.next_mid.proba += proba
-            return
-
-        # création du nouveau noeud
-        node = Node(S=self.next_mid.S * mult, proba=proba)
-        node.tree = tree; node.trunc = self.next_mid.trunc
-        node.prev_trunc = self.trunc; setattr(self, next_attr, node)
-
-        # liens verticaux
-        if kind == "up":
-            self.next_mid.up = node; node.down = self.next_mid
-        else:
-            self.next_mid.down = node; node.up = self.next_mid
-
-    def create_children(self, tree, pruning: bool = False, is_bord: bool = False):
+    def create_children(self, tree, i: int, pruning: bool = False, is_bord: bool = False, dividend: bool = False):
         """
         Crée les enfants (up, mid, down) pour ce nœud.
         - Utilise les méthodes spécialisées pour chaque branche.
         """
         # Crée le mid
-        self.create_mid(tree)
+        self.create_mid(tree, i, dividend)
 
         # Crée le up
         self.create_up(tree, pruning, is_bord)
 
         # Crée le down
         self.create_down(tree, pruning, is_bord)
-
-        # # Crée le up
-        # self._create_branch(tree, "up", pruning, is_bord)
-
-        # # Crée le down
-        # self._create_branch(tree, "down", pruning, is_bord)
     
     def price_recursive(self, option) -> float:
         """
