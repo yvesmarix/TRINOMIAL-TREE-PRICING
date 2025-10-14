@@ -90,6 +90,44 @@ class Node:
             self.next_down.prev_trunc = self.trunc
             # Ajout des liens verticaux
             self.next_mid.down = self.next_down; self.next_down.up = self.next_mid
+    
+    def _create_branch(self, tree, kind: str, pruning: bool, is_bord: bool):
+        """
+        Crée une branche 'up' ou 'down' pour la prochaine colonne.
+        kind ∈ {'up', 'down'}
+        """
+        assert kind in ("up", "down")
+
+        # Paramètres dépendant de la direction
+        p = getattr(tree, f"p_{kind}") # p_up ou p_down
+        mult = tree.alpha if kind == "up" else 1 / tree.alpha
+        sibling_attr = "up" if kind == "up" else "down"
+        next_attr = f"next_{kind}" # 'next_up' ou 'next_down'
+
+        proba = self.proba * p
+
+        # réutilisation si un noeud existe déjà via le frère vertical
+        sibling = getattr(self, sibling_attr)
+        if sibling is not None and sibling.next_mid is not None:
+            setattr(self, next_attr, sibling.next_mid)
+            sibling.next_mid.proba += proba
+            return
+
+        # pruning (on accumule dans le mid)
+        if pruning and proba < self.tree.epsilon and is_bord:
+            self.next_mid.proba += proba
+            return
+
+        # création du nouveau noeud
+        node = Node(S=self.next_mid.S * mult, proba=proba)
+        node.tree = tree; node.trunc = self.next_mid.trunc
+        node.prev_trunc = self.trunc; setattr(self, next_attr, node)
+
+        # liens verticaux
+        if kind == "up":
+            self.next_mid.up = node; node.down = self.next_mid
+        else:
+            self.next_mid.down = node; node.up = self.next_mid
 
     def create_children(self, tree, pruning: bool = False, is_bord: bool = False):
         """
@@ -104,6 +142,12 @@ class Node:
 
         # Crée le down
         self.create_down(tree, pruning, is_bord)
+
+        # # Crée le up
+        # self._create_branch(tree, "up", pruning, is_bord)
+
+        # # Crée le down
+        # self._create_branch(tree, "down", pruning, is_bord)
     
     def price_recursive(self, option) -> float:
         """
