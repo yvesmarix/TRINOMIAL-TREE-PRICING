@@ -24,22 +24,6 @@ def compute_p_up(p_down, alpha, esperance=None, forward=None, dividend=False):
         x = (esperance / forward)
         return (x - 1)/(alpha - 1) + p_down/alpha
 
-# old
-# def compute_p_down(esperance: float, forward: float, variance: float, alpha: float) -> float:
-#         return(
-#             esperance ** (-2) * (variance + forward**2)
-#             - 1
-#             - (alpha + 1) * (esperance ** (-1) * forward - 1)
-#         ) / ((1 - alpha) * (alpha ** (-2) - 1))
-
-# def compute_p_up(p_down: float, alpha: float, esperance: float = None
-#                 , forward: float = None, dividend: bool = False) -> float:
-#     if not dividend:
-#         return p_down / alpha
-#     else:
-#         return ((alpha - 1)**(-1)) * ((esperance ** (-1)) * forward - 1 -
-#                 ((alpha ** (-1)) - 1) * p_down)
-
 def compute_p_mid(p_down: float, p_up: float) -> float:
      return 1 - p_down - p_up
 
@@ -52,13 +36,29 @@ def compute_probabilities(esperance: float, forward: float
 
     return p_down, p_up, p_mid
 
-def iter_column(mid_node):
-    # yield tous les noeuds de la colonne (haut puis bas)
+def iter_column(mid_node, mode="pricing"):
+    """
+    Itère sur tous les nœuds d'une colonne (haut puis bas).
+    - En mode "building", renvoie un tuple (nœud, is_bord).
+    - En mode "pricing", renvoie uniquement le nœud.
+    """
+    if mode not in ["building", "pricing"]:
+        raise ValueError("Le mode doit être 'building' ou 'pricing'.")
+
+    # Parcours vers le haut
     n = mid_node
     while n:
-        yield n
+        if mode == "building":
+            yield n, (n.up is None)  # is_bord est True si le nœud n'a pas de `up`
+        else:
+            yield n
         n = n.up
+
+    # Parcours vers le bas
     n = mid_node.down
     while n:
-        yield n
+        if mode == "building":
+            yield n, (n.down is None)  # is_bord est True si le nœud n'a pas de `down`
+        else:
+            yield n
         n = n.down
