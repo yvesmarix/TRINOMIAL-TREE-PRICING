@@ -38,16 +38,11 @@ def bs_convergence_by_strike(market, option, K_values: list, N: int):
     bs_prices = []
     for K in K_values:
         option.K = K
-        tree_prices.append(TrinomialTree(market, option, N=N).price(option))
+        tree = TrinomialTree(market, option, N=N)
+        tree_prices.append(tree.price(option))
         bs_prices.append(
             BlackScholesPricer().price(
-                S=market.S0,
-                K=K,
-                T=option.T,
-                r=market.r,
-                q=0,
-                sigma=market.sigma,
-                option_type=option.option_type,
+                S=market.S0, K=option.K, T=tree.delta_t*tree.N, r=market.r, sigma=market.sigma, option_type='call', dividend=market.dividend, dividend_date = market.dividend_date
             )
         )  # q=0 car pas de dividendes
 
