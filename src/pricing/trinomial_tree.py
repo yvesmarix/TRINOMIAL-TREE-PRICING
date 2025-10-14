@@ -1,5 +1,8 @@
 import numpy as np
 import datetime as dt
+import matplotlib.pyplot as plt
+from matplotlib.collections import LineCollection
+from collections import deque
 from node import Node
 from model import Model
 from funcs import compute_forward, compute_variance, compute_probabilities, iter_column
@@ -114,3 +117,127 @@ class TrinomialTree(Model):
         years = (self.market.dividend_date - self.pricing_date).days / 365
         div_step = int(np.floor(years / self.delta_t + 1e-12))
         return max(1, min(div_step, self.N))
+
+    def plot_tree(
+        self,
+        max_depth=None,
+        proba_min: float = 1e-9,
+        y_min: float | None = None,
+        y_max: float | None = None,
+        percentile_clip: float = 0.0,
+        edge_alpha: float = 0.35,
+        linewidth: float = 0.4,
+    ):
+        """Tracé rapide : y = S, liens + nœuds, dédup, rasterize."""
+        self._assert_tree_built()
+        depth = self.N if max_depth is None else max_depth
+
+        xs, ys, sizes, edges, all_S = self._collect_nodes_and_edges(
+            depth=depth, proba_min=proba_min
+        )
+        if not xs:
+            raise RuntimeError("Aucun nœud à afficher (proba_min trop élevée ?).")
+
+        y_min, y_max = self._compute_ylim(all_S, y_min, y_max, percentile_clip)
+        self._draw_graph(xs, ys, sizes, edges, y_min, y_max, edge_alpha, linewidth)
+
+    def _assert_tree_built(self) -> None:
+        if not hasattr(self, "root") or self.root is None:
+            raise RuntimeError("Arbre non construit. Appelle price(build_tree=True).")
+
+    def _collect_nodes_and_edges(self, depth: int, proba_min: float):
+        """BFS dédupliqué → positions, tailles, segments et liste des S pour les bornes."""
+        from collections import deque
+        from typing import List, Tuple
+
+        visited, seen_edges = set(), set()
+        queue = deque([(self.root, 0)])
+
+        xs: List[int] = []
+        ys: List[float] = []
+        sizes: List[float] = []
+        edges: List[Tuple[tuple, tuple]] = []
+        all_S: List[float] = []
+
+        def push_edge(parent_id, lvl, S0, child):
+            if child is None: return
+            eid = (parent_id, id(child))
+            if eid not in seen_edges:
+                edges.append([(lvl, S0), (lvl + 1, getattr(child, "S", S0))])
+                seen_edges.add(eid)
+
+        while queue:
+            node, lvl = queue.popleft()
+            if node is None or lvl > depth: 
+                continue
+            nid = id(node)
+            if nid in visited:
+                continue
+            visited.add(nid)
+
+            p = float(getattr(node, "proba", 0.0) or 0.0)
+            S = getattr(node, "S", None)
+            if S is None: 
+                continue
+            all_S.append(S)
+
+            if p >= proba_min:
+                xs.append(lvl); ys.append(S)
+                sizes.append(max(min(p, 1.0), 1e-16) * 1500.0)
+
+            up, mid, dn = getattr(node, "next_up", None), getattr(node, "next_mid", None), getattr(node, "next_down", None)
+
+            # on pousse les arêtes seulement une fois par parent (dédup)
+            if p >= proba_min:
+                push_edge(nid, lvl, S, up)
+                push_edge(nid, lvl, S, mid)
+                push_edge(nid, lvl, S, dn)
+
+            # parcourir toujours (un enfant faible peut mener à un nœud fort)
+            if up:  queue.append((up,  lvl + 1))
+            if mid: queue.append((mid, lvl + 1))
+            if dn:  queue.append((dn,  lvl + 1))
+
+        return xs, ys, sizes, edges, all_S
+
+    def _compute_ylim(self, all_S, y_min, y_max, percentile_clip: float):
+        """Bornes Y explicites ou automatiques (avec clip optionnel)."""
+        import numpy as np
+        if y_min is not None and y_max is not None:
+            return y_min, y_max
+
+        Svals = np.asarray(all_S, float)
+        if 0.0 < percentile_clip < 0.5:
+            lo = float(np.quantile(Svals, percentile_clip))
+            hi = float(np.quantile(Svals, 1 - percentile_clip))
+        else:
+            lo, hi = float(Svals.min()), float(Svals.max())
+
+        span = max(1e-12, hi - lo)
+        lo -= 0.03 * span
+        hi += 0.03 * span
+
+        return (y_min if y_min is not None else lo,
+                y_max if y_max is not None else hi)
+
+    def _draw_graph(self, xs, ys, sizes, edges, y_min, y_max, edge_alpha, linewidth):
+        """Rendu matplotlib performant : LineCollection + scatter rasterized."""
+        import matplotlib.pyplot as plt
+        from matplotlib.collections import LineCollection
+
+        fig, ax = plt.subplots(figsize=(14, 9))
+
+        if edges:
+            lc = LineCollection(edges, linewidths=linewidth, alpha=edge_alpha)
+            lc.set_rasterized(True)
+            ax.add_collection(lc)
+
+        ax.scatter(xs, ys, s=sizes, alpha=0.7, rasterized=True, linewidths=0)
+
+        ax.set_title("Arbre trinomial", fontsize=14)
+        ax.set_xlabel("Étapes (t)")
+        ax.set_ylabel("Sous-jacent S")
+        ax.set_ylim(y_min, y_max)
+        ax.grid(True, linestyle="--", alpha=0.35)
+        fig.tight_layout()
+        plt.show()
