@@ -28,34 +28,16 @@ class Node:
         self.option_value = option_value  # Valeur de l'option au nœud
         self.tree = None
 
-    def _find_nearest_node(self, tree: object, i: int):
-        
-        esperance = compute_forward(self.S, tree.market.r, tree.delta_t) - tree.market.dividend
-        s_mid = self.S * np.exp(tree.market.r * tree.delta_t)
-
-        # génère plusieurs candidats autour de s_mid
-        candidates = []
-        for k in range(-i-1, i):  # explore de alpha^-i à alpha^i
-            candidate = s_mid * (tree.alpha ** k)
-            candidates.append(candidate)
-        # choisit le candidat le plus proche de l'espérance
-        return min(candidates, key=lambda x: abs(x - esperance))
-
     def create_mid(self, tree, i: int, dividend: bool = False):
         """
         Crée le nœud 'mid' pour la prochaine colonne.
-
-        Étape ex-div:
-        - On veut que le mid (colonne t+1) soit le plus proche de l'espérance = forward - D.
-        - On génère plusieurs candidats autour de s_mid (par puissances de alpha).
-        - On choisit le candidat le plus proche de l'espérance.
-        - Puis on recalcule les probabilités en mode dividend=True.
         """
 
         # pre-calculation
         proba_mid = self.proba * tree.p_mid
-        s_mid = self._find_nearest_node(tree, i) if dividend else self.S * np.exp(tree.market.r * tree.delta_t)
-
+        forward = self.S * np.exp(tree.market.r * tree.delta_t)
+        s_mid = forward - tree.market.dividend if dividend else forward
+        
         # check si deja existant
         if self.down is not None and self.down.next_up is not None:
             self.next_mid = self.down.next_up; self.down.next_up.proba += proba_mid
@@ -66,13 +48,75 @@ class Node:
             self.next_mid.tree = self
             
             # rattachement central
-            if self.trunc is None:
-                self.trunc = self
-            self.next_mid.trunc = self.next_mid; self.next_mid.prev_trunc = self.trunc
+            self._attach_trunc_links(self.next_mid)
 
-            # recalibration des probas sur le bon mid au pas ex-div
-            if dividend:
-                tree._compute_parameters(self.S, s_mid, dividend=True)
+    def _esperance(self, tree, is_dividend_step: bool) -> float:
+        forward = self.S * np.exp(tree.market.r * tree.delta_t)
+        return forward - tree.market.dividend if is_dividend_step else forward
+
+    def _attach_trunc_links(self, child):
+        if self.trunc is None:
+            self.trunc = self
+        child.trunc = getattr(child, "trunc", child)
+        child.prev_trunc = self.trunc
+
+    def _best_candidate(self, target_price: float):
+        """Parmi {base, base.up, base.down} retourne celui le plus proche de la cible."""
+        if self.down is not None:
+            duo = [self.down.next_up, self.down.next_mid]
+        elif self.up is not None: 
+            duo = [self.up.next_down, self.up.next_mid]
+        else:
+            return
+        return min(duo, key=lambda n: abs(n.S - target_price))
+
+    def _ensure_neighbor(self, tree, direction: str, pruning: bool, is_bord: bool):
+        """
+        Aligne next_up / next_down autour de self.next_mid.
+        - Si le voisin immédiat existe déjà, on réutilise.
+        - Sinon on crée exactement à S*alpha (up) ou S/alpha (down).
+        """
+        if direction == "up":
+            self.next_down = self._best_candidate(self.next_mid / tree.alpha)
+            self.next_mid.down = self.next_down
+            self._attach_trunc_links( self.next_down)
+            self.create_up(tree, pruning, is_bord)
+        else:
+            self.next_up = self._best_candidate(self.next_mid * tree.alpha)
+            self.next_mid.up = self.next_up
+            self._attach_trunc_links( self.next_up)
+            self.create_down(tree, pruning, is_bord)
+                     
+
+    def create_mid_w_div(self, tree, pruning: bool, is_bord: bool, dividend: bool = False):
+        """
+        Cas simple: au plus UN décalage (±1 cran) à l’étape ex-div.
+        1) cible = forward - D
+        2) candidats = down.next_up et up.next_down ; pour chacun on regarde {base, base.up, base.down}
+        et on prend le plus proche de la cible.
+        3) next_mid = meilleur candidat (sinon on crée à la cible et on recalibre).
+        4) on aligne next_down / next_up sur les voisins immédiats de next_mid (ou on les crée).
+        """
+        esperance = self._esperance(tree, True)
+        proba_mid = self.proba * tree.p_mid
+
+        # candidate
+        candidate = self._best_candidate(esperance)
+
+        if candidate is not None:
+            self.next_mid = candidate; candidate.proba += proba_mid
+            self._attach_trunc_links(candidate)
+            tree._compute_parameters(self.S, self.next_mid.S, dividend=True)
+        else:
+            # aucune base exploitable -> on ancre le mid pile à la cible et on recalibre localement
+            tree._compute_parameters(self.S, esperance, dividend=True)
+            next_mid = Node(S=esperance, proba=proba_mid); next_mid.tree = tree
+            self._attach_trunc_links(next_mid)
+            self.next_mid = next_mid
+
+        # frères: réutiliser si présent autour du next_mid, sinon créer au bon niveau
+        self._ensure_neighbor(tree, "down", pruning, is_bord)
+        self._ensure_neighbor(tree, "up", pruning, is_bord)
 
 
     def create_up(self, tree: object, pruning: bool, is_bord: bool):
@@ -82,6 +126,11 @@ class Node:
         # pre-calculation
         proba_up = self.proba * tree.p_up
 
+        # >>> ne pas recréer si déjà câblé (ex: cas -α symétrique)
+        if self.next_up is not None:
+            self.next_up.proba += proba_up
+            return
+        
         # check si noeud deja existant
         if self.up is not None and self.up.next_mid is not None:
             self.next_up = self.up.next_mid; self.up.next_mid.proba += proba_up
@@ -103,6 +152,11 @@ class Node:
         """
         # pre-calculation
         proba_down = self.proba * tree.p_down
+        
+        # >>> ne pas recréer si déjà câblé
+        if self.next_down is not None:
+            self.next_down.proba += proba_down
+            return
 
         # check si noeud deja existant
         if self.down is not None and self.down.next_mid is not None:

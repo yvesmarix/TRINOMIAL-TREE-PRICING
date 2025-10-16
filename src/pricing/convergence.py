@@ -1,5 +1,5 @@
 import pandas as pd
-from pricing import BlackScholesPricer, TrinomialTree, Market
+from pricing import BlackScholesPricer, TrinomialTree
 
 def bs_convergence_by_step(
     market, option, bs_price: float, max_n: int = 1000, step: int = 10
@@ -11,7 +11,7 @@ def bs_convergence_by_step(
     prices = []
     N_values = list(range(step, max_n + 1, step))
     for N in N_values:
-        tree = TrinomialTree(market, option, N=N)
+        tree = TrinomialTree(market, option, N=N, pruning=True, epsilon=1e-7)
         prices.append(tree.price(option))
 
     price_dataset = pd.DataFrame(
@@ -42,7 +42,14 @@ def bs_convergence_by_strike(market, option, K_values: list, N: int):
         tree_prices.append(tree.price(option))
         bs_prices.append(
             BlackScholesPricer().price(
-                S=market.S0, K=option.K, T=tree.delta_t*tree.N, r=market.r, sigma=market.sigma, option_type='call', dividend=market.dividend, dividend_date = market.dividend_date
+                S=market.S0, 
+                K=option.K, 
+                T=tree.delta_t*tree.N, 
+                r=market.r, 
+                sigma=market.sigma, 
+                option_type='call', 
+                dividend=market.dividend, 
+                dividend_date = market.dividend_date
             )
         )  # q=0 car pas de dividendes
 
