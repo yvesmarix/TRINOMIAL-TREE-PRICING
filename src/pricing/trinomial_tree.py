@@ -62,11 +62,11 @@ class TrinomialTree(Model):
 
         for i in range(self.N):
             step_left = self.N - (i + 1)
-            dividend = (div_step == step_left and self.market.dividend > 0)
+            dividend = (div_step == i + 1 and self.market.dividend > 0)
 
             # Crée les enfants pour chaque nœud de la colonne courante
             for node, is_bord in iter_column(t, mode="building"):
-                node.create_children(self, i, pruning=self.pruning, is_bord=is_bord, dividend=dividend)
+                node.create_children(self, pruning=self.pruning, is_bord=is_bord, dividend=dividend)
 
             # retour aux probas normales
             if dividend:
@@ -78,22 +78,24 @@ class TrinomialTree(Model):
         root.tree = self
         return root
 
-    def _compute_parameters(self, S: float, S1_mid: float = None, dividend: bool = False) -> None:
+    def _compute_parameters(self, S: float, S1_mid: float = None, dividend: bool = False, validate: bool = True) -> None:
         """
-        Calibrage local des paramètres de la maille:
-        - delta_t, alpha (écart multiplicatif up / down),
-        - p_down, p_mid, p_up via compute_probabilities.
-        - Si dividend=True: l'espérance est forward - D et S1_mid est le mid choisi.
+        Calibrage local.
+        Si validate=False, on n'asserte pas (utile pendant le recentrage du mid).
         """
         self.delta_t = (self.option.maturity - self.pricing_date).days / self.N / 365
         self.alpha = np.exp(self.market.sigma * np.sqrt(3 * self.delta_t))
+
         forward  = compute_forward(S, self.market.r, self.delta_t)
         esperance = forward - self.market.dividend if dividend else forward
         variance = compute_variance(S, self.market.r, self.delta_t, self.market.sigma)
+
         self.p_down, self.p_up, self.p_mid = compute_probabilities(
             esperance, S1_mid if dividend else forward, variance, self.alpha, dividend
         )
-        self._assert_probabilities(self.p_down, self.p_up, self.p_mid)
+        if validate:
+            self._assert_probabilities(self.p_down, self.p_up, self.p_mid)
+
 
     def _assert_probabilities(self, p_down, p_up, p_mid):
         """

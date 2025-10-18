@@ -28,15 +28,14 @@ class Node:
         self.option_value = option_value  # Valeur de l'option au nœud
         self.tree = None
 
-    def create_mid(self, tree, i: int, dividend: bool = False):
+    def create_mid(self, tree):
         """
         Crée le nœud 'mid' pour la prochaine colonne.
         """
 
         # pre-calculation
         proba_mid = self.proba * tree.p_mid
-        forward = self.S * np.exp(tree.market.r * tree.delta_t)
-        s_mid = forward - tree.market.dividend if dividend else forward
+        s_mid = self._esperance(tree)
         
         # check si deja existant
         if self.down is not None and self.down.next_up is not None:
@@ -45,79 +44,166 @@ class Node:
             self.next_mid = self.up.next_down; self.up.next_down.proba += proba_mid
         else: # creation
             self.next_mid = Node(S=s_mid, proba=proba_mid)
-            self.next_mid.tree = self
-            
+            self.next_mid.tree = tree
             # rattachement central
             self._attach_trunc_links(self.next_mid)
 
-    def _esperance(self, tree, is_dividend_step: bool) -> float:
+    def _esperance(self, tree, is_dividend_step: bool = False) -> float:
         forward = self.S * np.exp(tree.market.r * tree.delta_t)
         return forward - tree.market.dividend if is_dividend_step else forward
 
     def _attach_trunc_links(self, child):
         if self.trunc is None:
             self.trunc = self
-        child.trunc = getattr(child, "trunc", child)
+        child.trunc = child if child.trunc is None else child.trunc
         child.prev_trunc = self.trunc
 
-    def _best_candidate(self, target_price: float):
-        """Parmi {base, base.up, base.down} retourne celui le plus proche de la cible."""
-        if self.down is not None:
-            duo = [self.down.next_up, self.down.next_mid]
-        elif self.up is not None: 
-            duo = [self.up.next_down, self.up.next_mid]
-        else:
-            return
-        return min(duo, key=lambda n: abs(n.S - target_price))
+    def next_column_nodes(self):
+        """
+        Retourne la liste des nœuds déjà créés de la colonne suivante (t+1),
+        même si self.next_mid n'est pas encore câblé (on passe alors par le centre).
+        """
+        # trouve le centre de t+1
+        center = None
+        if self.next_mid is not None:
+            center = self.next_mid.trunc
+        elif self.down is not None and self.down.next_mid is not None:
+            center = self.down.next_mid.trunc
+        elif self.up is not None and self.up.next_mid is not None:
+            center = self.up.next_mid.trunc
 
-    def _ensure_neighbor(self, tree, direction: str, pruning: bool, is_bord: bool):
-        """
-        Aligne next_up / next_down autour de self.next_mid.
-        - Si le voisin immédiat existe déjà, on réutilise.
-        - Sinon on crée exactement à S*alpha (up) ou S/alpha (down).
-        """
-        if direction == "up":
-            self.next_down = self._best_candidate(self.next_mid / tree.alpha)
-            self.next_mid.down = self.next_down
-            self._attach_trunc_links( self.next_down)
-            self.create_up(tree, pruning, is_bord)
-        else:
-            self.next_up = self._best_candidate(self.next_mid * tree.alpha)
-            self.next_mid.up = self.next_up
-            self._attach_trunc_links( self.next_up)
-            self.create_down(tree, pruning, is_bord)
-                     
+        if center is None:
+            return []
 
-    def create_mid_w_div(self, tree, pruning: bool, is_bord: bool, dividend: bool = False):
+        col = []
+        # 2) remonter au top
+        for x in iter_column(center):
+            col.append(x)
+        return col
+
+
+    def _find_closest_node(self, target_price: float, above: bool | None = None):
         """
-        Cas simple: au plus UN décalage (±1 cran) à l’étape ex-div.
-        1) cible = forward - D
-        2) candidats = down.next_up et up.next_down ; pour chacun on regarde {base, base.up, base.down}
-        et on prend le plus proche de la cible.
-        3) next_mid = meilleur candidat (sinon on crée à la cible et on recalibre).
-        4) on aligne next_down / next_up sur les voisins immédiats de next_mid (ou on les crée).
+        Trouve le nœud le plus proche de target_price parmi les voisins directs
+        et leurs descendants, pour potentiellement devenir next_mid.
         """
-        esperance = self._esperance(tree, True)
+        candidates = self.next_column_nodes()
+        # Si aucun candidat valide, retourner None
+        if not candidates:
+            return None
+        # on exclu le mid lui même
+        candidates = [n for n in candidates if n is not self.next_mid]
+        # filtre directionnel
+        if above is True:
+            candidates = [n for n in candidates if n.S > self.next_mid.S]
+        elif above is False:
+            candidates = [n for n in candidates if n.S < self.next_mid.S]
+        # dernier filtre
+        if not candidates:
+            return None
+        candidate = min(candidates, key=lambda n: abs(n.S - target_price))
+
+        return candidate
+
+    def _ensure_neighbor(self, tree, pruning: bool, is_bord: bool):
+        # --- DOWN (doit être sous le mid) ---
+        if self.next_down is None:
+            cand = self._find_closest_node(self.next_mid.S / tree.alpha, above=False)
+            if cand is not None:
+                self.next_down = cand
+                self.next_down.proba += self.proba * tree.p_down
+            else:
+                self.create_down(tree, pruning, is_bord)
+
+        if self.next_down is not None:
+            if self.next_mid.down is None or self.next_mid.down is self.next_down:
+                self.next_mid.down = self.next_down
+            if self.next_down.up is None or self.next_down.up is self.next_mid:
+                self.next_down.up = self.next_mid
+
+        # --- UP (doit être au-dessus du mid) ---
+        if self.next_up is None:
+            cand = self._find_closest_node(self.next_mid.S * tree.alpha, above=True)
+            if cand is not None:
+                self.next_up = cand
+                self.next_up.proba += self.proba * tree.p_up
+            else:
+                self.create_up(tree, pruning, is_bord)
+
+        if self.next_up is not None:
+            if self.next_mid.up is None or self.next_mid.up is self.next_up:
+                self.next_mid.up = self.next_up
+            if self.next_up.down is None or self.next_up.down is self.next_mid:
+                self.next_up.down = self.next_mid
+
+    def _probas_valid(self, tree) -> bool:
+        """Vérifie p in [0,1] et somme≈1 pour l'état courant du tree."""
+        p_down, p_up, p_mid = tree.p_down, tree.p_up, tree.p_mid
+        if not (0.0 <= p_down <= 1.0 and 0.0 <= p_mid <= 1.0 and 0.0 <= p_up <= 1.0):
+            return False
+        return abs((p_down + p_mid + p_up) - 1.0) <= 1e-12
+
+    def _shift_toward_expectation(self, tree, esperance: float) -> bool:
+        """
+        Tente de déplacer next_mid d'un cran vers l'espérance.
+        Retourne True si déplacement effectué, False sinon.
+        """
+        if self.next_mid is None:
+            return False
+        # Choix du sens de décalage
+        if esperance > self.next_mid.S and self.next_mid.up is not None:
+            # bascule sur l'up immédiat
+            self.next_mid = self.next_mid.up
+            return True
+        elif esperance < self.next_mid.S and self.next_mid.down is not None:
+            self.next_mid = self.next_mid.down
+            return True
+        return False
+
+    def _recenter_mid_until_valid(self, tree, esperance: float, dividend: bool):
+        """
+        Boucle : recalibre les probas avec le mid courant ;
+        si invalide, décale le mid vers l'espérance et recommence.
+        Stop après un nombre raisonnable d'itérations.
+        """
+        max_shift = 16  # sécurité
+        for _ in range(max_shift):
+            # recalibrage autour du mid courant
+            tree._compute_parameters(self.S, self.next_mid.S, dividend=dividend, validate=False)
+            if self._probas_valid(tree):
+                return
+            moved = self._shift_toward_expectation(tree, esperance)
+            if not moved:
+                break
+        # Dernier filet : clip "doux" pour éviter crash, mais logguer
+        tree.p_down = max(0.0, min(1.0, tree.p_down))
+        tree.p_mid  = max(0.0, min(1.0, tree.p_mid))
+        tree.p_up   = max(0.0, min(1.0, tree.p_up))
+        s = tree.p_down + tree.p_mid + tree.p_up
+        if s != 0.0:
+            tree.p_down /= s; tree.p_mid /= s; tree.p_up /= s
+
+    def create_mid_w_div(self, tree, pruning: bool, is_bord: bool):
+        esperance = self._esperance(tree, True)  # forward - D
         proba_mid = self.proba * tree.p_mid
 
-        # candidate
-        candidate = self._best_candidate(esperance)
-
+        # 1) meilleur candidat autour de l'espérance
+        candidate = self._find_closest_node(esperance)
         if candidate is not None:
-            self.next_mid = candidate; candidate.proba += proba_mid
+            self.next_mid = candidate
+            candidate.proba += proba_mid
             self._attach_trunc_links(candidate)
-            tree._compute_parameters(self.S, self.next_mid.S, dividend=True)
         else:
-            # aucune base exploitable -> on ancre le mid pile à la cible et on recalibre localement
-            tree._compute_parameters(self.S, esperance, dividend=True)
-            next_mid = Node(S=esperance, proba=proba_mid); next_mid.tree = tree
-            self._attach_trunc_links(next_mid)
-            self.next_mid = next_mid
+            # 2) crée pile à l'espérance
+            self.next_mid = Node(S=esperance, proba=proba_mid)
+            self.next_mid.tree = tree
+            self._attach_trunc_links(self.next_mid)
 
-        # frères: réutiliser si présent autour du next_mid, sinon créer au bon niveau
-        self._ensure_neighbor(tree, "down", pruning, is_bord)
-        self._ensure_neighbor(tree, "up", pruning, is_bord)
+        # 3) recalibrage + recentrage si probas invalides
+        self._recenter_mid_until_valid(tree, esperance, dividend=True)
 
+        # 4) frères alignés autour du mid ; recycle si possible sinon crée
+        self._ensure_neighbor(tree, pruning, is_bord)
 
     def create_up(self, tree: object, pruning: bool, is_bord: bool):
         """
@@ -171,20 +257,22 @@ class Node:
             self.next_down.prev_trunc = self.trunc
             # Ajout des liens verticaux
             self.next_mid.down = self.next_down; self.next_down.up = self.next_mid
-
-    def create_children(self, tree, i: int, pruning: bool = False, is_bord: bool = False, dividend: bool = False):
+    
+    def create_children(self, tree, pruning: bool = False, is_bord: bool = False, dividend: bool = False):
         """
         Crée les enfants (up, mid, down) pour ce nœud.
         - Utilise les méthodes spécialisées pour chaque branche.
         """
         # Crée le mid
-        self.create_mid(tree, i, dividend)
+        if not dividend: 
+            self.create_mid(tree)
+            # Crée le up
+            self.create_up(tree, pruning, is_bord)
+            # Crée le down
+            self.create_down(tree, pruning, is_bord)
+        else: 
+            self.create_mid_w_div(tree, pruning, is_bord)
 
-        # Crée le up
-        self.create_up(tree, pruning, is_bord)
-
-        # Crée le down
-        self.create_down(tree, pruning, is_bord)
     
     def price_recursive(self, option) -> float:
         """
@@ -217,25 +305,6 @@ class Node:
             self.option_value = continuation
         return self.option_value
     
-    def price(self, option) -> float:
-        # calcul des enfants
-        v_up = self.tree.p_up * (self.next_up.option_value if self.next_up else 0.0)
-        v_mid = self.tree.p_mid * (self.next_mid.option_value if self.next_mid else 0.0)
-        v_down = self.tree.p_down * (self.next_down.option_value if self.next_down else 0.0)
-
-        # actualisation
-        discount = np.exp(-self.tree.market.r * self.tree.delta_t)
-        continuation = discount * (v_up + v_mid + v_down)
-
-        if option.option_class == "american":
-            exercise = option.payoff(self.S)
-            self.option_value = max(exercise, continuation)
-        else:
-            self.option_value = continuation
-        
-        return self.option_value
-        
-
     def price_backward(self, option=None):
         """
         Backward induction explicite (sans récursion) avec factorisation.
