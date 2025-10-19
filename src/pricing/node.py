@@ -32,7 +32,6 @@ class Node:
         """
         Crée le nœud 'mid' pour la prochaine colonne.
         """
-
         # pre-calculation
         proba_mid = self.proba * tree.p_mid
         s_mid = self._esperance(tree)

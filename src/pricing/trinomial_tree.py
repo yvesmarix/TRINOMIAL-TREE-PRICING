@@ -53,6 +53,37 @@ class TrinomialTree(Model):
             self.root = self._build_tree()
         return self.root.price_backward(self.option)
     
+    def delta(self) -> float:
+        """
+        Δ ≈ (V_up - V_down) / (S_up - S_down)
+        Utilise uniquement la première colonne de l'arbre.
+        """
+        # Assure le pricing (remplit option_value sur tous les nœuds)
+        self.price(build_tree=True)
+
+        r = self.root
+        u, d = r.next_up, r.next_down
+        if not (u and d):
+            raise RuntimeError("Première colonne incomplète : désactive le pruning près de la racine.")
+
+        return (u.option_value - d.option_value) / (u.S - d.S)
+
+    def gamma(self) -> float:
+        """
+        Γ ≈ dérivée du Δ entre (down→mid) et (mid→up):
+        ((V_up - V_mid)/(S_up - S_mid) - (V_mid - V_down)/(S_mid - S_down)) / ((S_up - S_down)/2)
+        """
+        self.price(build_tree=True)
+
+        r = self.root
+        u, m, d = r.next_up, r.next_mid, r.next_down
+        if not (u and m and d):
+            raise RuntimeError("Première colonne incomplète : désactive le pruning près de la racine.")
+
+        d1 = (u.option_value - m.option_value) / (u.S - m.S)
+        d2 = (m.option_value - d.option_value) / (m.S - d.S)
+        return (d1 - d2) / ((u.S - d.S) * 0.5)
+
     def _should_prune_node(self, node) -> bool:
         # full-monomial si la masse arrivée sur ce nœud est trop faible
         return self.pruning and (node.proba < self.epsilon)
