@@ -53,29 +53,28 @@ class TrinomialTree(Model):
             self.root = self._build_tree()
         return self.root.price_backward(self.option)
     
+    def _should_prune_node(self, node) -> bool:
+        # full-monomial si la masse arrivée sur ce nœud est trop faible
+        return self.pruning and (node.proba < self.epsilon)
+    
     def _build_tree(self) -> Node:
-        root = Node(S=self.market.S0, proba=1.0)
-        root.tree = self
-        t = root
-
-        div_step = self._compute_div_step()
+        # racine
+        root = Node(S=self.market.S0, proba=1.0); root.tree = self
+        t = root # attribution de la colonne
+        div_step = self._compute_div_step() # phase de dividende
 
         for i in range(self.N):
-            step_left = self.N - (i + 1)
             dividend = (div_step == i + 1 and self.market.dividend > 0)
 
-            # Crée les enfants pour chaque nœud de la colonne courante
-            for node, is_bord in iter_column(t, mode="building"):
-                node.create_children(self, pruning=self.pruning, is_bord=is_bord, dividend=dividend)
+            for node in iter_column(t):
+                if self._should_prune_node(node):
+                    node.prune_monomial(self, dividend=dividend)
+                else:
+                    node.create_children(self, i, dividend=dividend)
 
-            # retour aux probas normales
             if dividend:
                 self._compute_parameters(t.S)
-
-            # Avance à la colonne suivante
             t = t.next_mid
-
-        root.tree = self
         return root
 
     def _compute_parameters(self, S: float, S1_mid: float = None, dividend: bool = False, validate: bool = True) -> None:
