@@ -41,72 +41,112 @@ class TrinomialTree(Model):
         self.pruning = pruning
         super().__init__(pricingDate if pricingDate else dt.datetime.today())
 
-    def price(self, build_tree: bool = False) -> float:
+    def price(
+        self,
+        build_tree: bool = False,
+        compute_greeks: bool = False,
+        bump_eps: float = 1e-3,
+        bump_mode: str = "relative",
+    ):
         """
-        Calcule le prix (backward induction).
-        - (Re)construit l'arbre si nécessaire.
-        - Retourne la valeur au noeud racine.
+        Calcule le prix (backward). Optionnellement, prépare deux frères au-dessus/en-dessous
+        de la racine pour obtenir Δ et Γ en un seul backward.
         """
         if build_tree or not hasattr(self, "root") or self.root is None:
-            # Probabilités calibrées avant construction (colonne 0 -> 1)
             self._compute_parameters(self.market.S0, dividend=False)
-            self.root = self._build_tree()
-        return self.root.price_backward(self.option)
+            self.root = self._build_tree(
+                compute_greeks=compute_greeks,
+                bump_eps=bump_eps,
+                bump_mode=bump_mode,
+            )
+
+        v0 = self.root.price_backward(self.option)
+        if not compute_greeks:
+            return v0
+
+        h = self._bump_size(bump_eps, bump_mode)
+        greeks = self._extract_greeks_from_root(v0, h)
+        return v0, greeks
     
-    def delta(self) -> float:
+    def _build_tree(
+        self,
+        compute_greeks: bool = False,
+        bump_eps: float = 1e-3,
+        bump_mode: str = "relative",
+    ) -> Node:
+        # racine
+        root = Node(S=self.market.S0, proba=1.0); root.tree = self; root.trunc = root
+
+        # grecs: on ajoute 2 frères sur la colonne 0
+        if compute_greeks:
+            self._create_root_siblings_for_greeks(root, bump_eps, bump_mode)
+
+        # construction colonne par colonne
+        t = root
+        div_step = self._compute_div_step()
+
+        for i in range(self.N):
+            dividend = (div_step == i + 1 and self.market.dividend > 0)
+            for node in iter_column(t):
+                # si compute_greeks -> on force la création (évite pruning asymétrique)
+                if (not compute_greeks) and self._should_prune_node(node):
+                    node.prune_monomial(self, dividend=dividend)
+                else:
+                    node.create_children(self, i, dividend=dividend)
+            if dividend:
+                self._compute_parameters(t.S) # retour aux probas classiques
+            t = t.next_mid
+
+        return root
+
+    def _bump_size(self, bump_eps: float, bump_mode: str) -> float:
+        """Retourne h (taille du bump) selon le mode."""
+        return (bump_eps * self.market.S0) if bump_mode == "relative" else bump_eps
+
+    def _create_root_siblings_for_greeks(
+        self, root: "Node", bump_eps: float, bump_mode: str
+    ) -> None:
         """
-        Δ ≈ (V_up - V_down) / (S_up - S_down)
-        Utilise uniquement la première colonne de l'arbre.
+        Crée deux nœuds FRÈRES (up/down) autour de la racine, dans la même colonne.
+        Ce ne sont PAS des enfants (pas de next_*).
         """
-        # Assure le pricing (remplit option_value sur tous les nœuds)
-        self.price(build_tree=True)
+        h = self._bump_size(bump_eps, bump_mode)
+        sup = root.S + h
+        sdn = root.S - h
 
-        r = self.root
-        u, d = r.next_up, r.next_down
-        if not (u and d):
-            raise RuntimeError("Première colonne incomplète : désactive le pruning près de la racine.")
+        up0   = Node(S=sup, proba=1.0)
+        down0 = Node(S=sdn, proba=1.0)
 
-        return (u.option_value - d.option_value) / (u.S - d.S)
+        up0.tree = self; down0.tree = self
+        up0.trunc = root; down0.trunc = root
+        up0.prev_trunc = None; down0.prev_trunc = None
 
-    def gamma(self) -> float:
+        # liens verticaux (même colonne 0)
+        root.up = up0; up0.down = root
+        root.down = down0; down0.up = root
+
+    def _extract_greeks_from_root(self, v0: float, h: float) -> dict:
         """
-        Γ ≈ dérivée du Δ entre (down→mid) et (mid→up):
-        ((V_up - V_mid)/(S_up - S_mid) - (V_mid - V_down)/(S_mid - S_down)) / ((S_up - S_down)/2)
+        Lit les valeurs déjà fixées par price_backward() sur root.up / root.down.
+        Calcule Delta et Gamma centrés.
         """
-        self.price(build_tree=True)
+        up_node = getattr(self.root, "up", None)
+        dn_node = getattr(self.root, "down", None)
+        if up_node is None or dn_node is None:
+            return {"delta": None, "gamma": None}
 
-        r = self.root
-        u, m, d = r.next_up, r.next_mid, r.next_down
-        if not (u and m and d):
-            raise RuntimeError("Première colonne incomplète : désactive le pruning près de la racine.")
+        v_up = up_node.option_value
+        v_dn = dn_node.option_value
+        if v_up is None or v_dn is None:
+            return {"delta": None, "gamma": None}
 
-        d1 = (u.option_value - m.option_value) / (u.S - m.S)
-        d2 = (m.option_value - d.option_value) / (m.S - d.S)
-        return (d1 - d2) / ((u.S - d.S) * 0.5)
+        delta = (v_up - v_dn) / (2.0 * h)
+        gamma = (v_up - 2.0 * v0 + v_dn) / (h ** 2)
+        return {"delta": float(delta), "gamma": float(gamma)}
 
     def _should_prune_node(self, node) -> bool:
         # full-monomial si la masse arrivée sur ce nœud est trop faible
         return self.pruning and (node.proba < self.epsilon)
-    
-    def _build_tree(self) -> Node:
-        # racine
-        root = Node(S=self.market.S0, proba=1.0); root.tree = self
-        t = root # attribution de la colonne
-        div_step = self._compute_div_step() # phase de dividende
-
-        for i in range(self.N):
-            dividend = (div_step == i + 1 and self.market.dividend > 0)
-
-            for node in iter_column(t):
-                if self._should_prune_node(node):
-                    node.prune_monomial(self, dividend=dividend)
-                else:
-                    node.create_children(self, i, dividend=dividend)
-
-            if dividend:
-                self._compute_parameters(t.S)
-            t = t.next_mid
-        return root
 
     def _compute_parameters(self, S: float, S1_mid: float = None, dividend: bool = False, validate: bool = True) -> None:
         """
@@ -178,29 +218,38 @@ class TrinomialTree(Model):
             raise RuntimeError("Arbre non construit. Appelle price(build_tree=True).")
 
     def _collect_nodes_and_edges(self, depth: int, proba_min: float):
-        """BFS dédupliqué → positions, tailles, segments et liste des S pour les bornes."""
+        """BFS dédupliqué → positions, tailles, segments et liste des S pour les bornes.
+        Aligne tous les nœuds de la colonne 0 sur x=0.
+        """
         from collections import deque
         from typing import List, Tuple
 
         visited, seen_edges = set(), set()
-        queue = deque([(self.root, 0)])
+        queue = deque([(n, 0) for n in iter_column(self.root)])
 
-        xs: List[int] = []
+        xs: List[float] = []
         ys: List[float] = []
         sizes: List[float] = []
         edges: List[Tuple[tuple, tuple]] = []
         all_S: List[float] = []
 
-        def push_edge(parent_id, lvl, S0, child):
-            if child is None: return
-            eid = (parent_id, id(child))
+        def x_of(_node, lvl: int) -> float:
+            # -> tous les nœuds de la colonne 0 (racine et ses frères) à x=0
+            return 0.0 if lvl == 0 else float(lvl)
+
+        def push_edge(parent, lvl: int, S0: float, child):
+            if child is None:
+                return
+            eid = (id(parent), id(child))
             if eid not in seen_edges:
-                edges.append([(lvl, S0), (lvl + 1, getattr(child, "S", S0))])
+                px = x_of(parent, lvl)
+                cx = x_of(child,  lvl + 1)
+                edges.append([(px, S0), (cx, getattr(child, "S", S0))])
                 seen_edges.add(eid)
 
         while queue:
             node, lvl = queue.popleft()
-            if node is None or lvl > depth: 
+            if node is None or lvl > depth:
                 continue
             nid = id(node)
             if nid in visited:
@@ -209,28 +258,30 @@ class TrinomialTree(Model):
 
             p = float(getattr(node, "proba", 0.0) or 0.0)
             S = getattr(node, "S", None)
-            if S is None: 
+            if S is None:
                 continue
             all_S.append(S)
 
             if p >= proba_min:
-                xs.append(lvl); ys.append(S)
+                xs.append(x_of(node, lvl))        # x=0 pour t=0
+                ys.append(S)
                 sizes.append(max(min(p, 1.0), 1e-16) * 1500.0)
 
-            up, mid, dn = getattr(node, "next_up", None), getattr(node, "next_mid", None), getattr(node, "next_down", None)
+            up  = getattr(node, "next_up", None)
+            mid = getattr(node, "next_mid", None)
+            dn  = getattr(node, "next_down", None)
 
-            # on pousse les arêtes seulement une fois par parent (dédup)
             if p >= proba_min:
-                push_edge(nid, lvl, S, up)
-                push_edge(nid, lvl, S, mid)
-                push_edge(nid, lvl, S, dn)
+                push_edge(node, lvl, S, up)
+                push_edge(node, lvl, S, mid)
+                push_edge(node, lvl, S, dn)
 
-            # parcourir toujours (un enfant faible peut mener à un nœud fort)
             if up:  queue.append((up,  lvl + 1))
             if mid: queue.append((mid, lvl + 1))
             if dn:  queue.append((dn,  lvl + 1))
 
         return xs, ys, sizes, edges, all_S
+
 
     def _compute_ylim(self, all_S, y_min, y_max, percentile_clip: float):
         """Bornes Y explicites ou automatiques (avec clip optionnel)."""
