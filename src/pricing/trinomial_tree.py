@@ -1,3 +1,4 @@
+from csv import Error
 import numpy as np
 import datetime as dt
 import matplotlib.pyplot as plt
@@ -5,6 +6,7 @@ from matplotlib.collections import LineCollection
 from collections import deque
 from node import Node
 from model import Model
+from option import Option
 from funcs import compute_forward, compute_variance, compute_probabilities, iter_column
 from typing import *
 
@@ -31,10 +33,9 @@ class TrinomialTree(Model):
     """
 
     def __init__(
-        self, market, option, N, pruning: bool = False, epsilon=None, pricingDate=None
+        self, market, N, pruning: bool = False, epsilon=None, pricingDate=None
     ):
         self.market = market
-        self.option = option
         self.N = N
         # seuil absolu de pruning (probabilité minimale pour créer la branche)
         self.epsilon = epsilon if epsilon is not None else 1e-7
@@ -43,43 +44,40 @@ class TrinomialTree(Model):
 
     def price(
         self,
+        option: Option,
+        mode: Literal["backward", "recursive"] = "backward",
         build_tree: bool = False,
         compute_greeks: bool = False,
-        bump_eps: float = 1e-3,
-        bump_mode: str = "relative",
     ):
         """
-        Calcule le prix (backward). Optionnellement, prépare deux frères au-dessus/en-dessous
+        Calcule le prix (backward ou recursive). Optionnellement, prépare deux frères au-dessus/en-dessous
         de la racine pour obtenir Δ et Γ en un seul backward.
         """
         if build_tree or not hasattr(self, "root") or self.root is None:
+            # define new option
+            self.option = option
             self._compute_parameters(self.market.S0, dividend=False)
             self.root = self._build_tree(
-                compute_greeks=compute_greeks,
-                bump_eps=bump_eps,
-                bump_mode=bump_mode,
-            )
+                compute_greeks=compute_greeks)
 
-        v0 = self.root.price_backward(self.option)
-        if not compute_greeks:
-            return v0
+        if mode == "backward":
+            return self.root.price_backward(self.option)
+        elif mode == "recursive":
+            return self.root.price_recursive(self.option)
+        else:
+            raise ValueError("Mode must be either 'backward' or 'recursive'")
 
-        h = self._bump_size(bump_eps, bump_mode)
-        greeks = self._extract_greeks_from_root(v0, h)
-        return v0, greeks
     
     def _build_tree(
         self,
         compute_greeks: bool = False,
-        bump_eps: float = 1e-3,
-        bump_mode: str = "relative",
     ) -> Node:
         # racine
         root = Node(S=self.market.S0, proba=1.0); root.tree = self; root.trunc = root
 
         # grecs: on ajoute 2 frères sur la colonne 0
         if compute_greeks:
-            self._create_root_siblings_for_greeks(root, bump_eps, bump_mode)
+            self._create_root_siblings_for_greeks(root)
 
         # construction colonne par colonne
         t = root
@@ -88,8 +86,7 @@ class TrinomialTree(Model):
         for i in range(self.N):
             dividend = (div_step == i + 1 and self.market.dividend > 0)
             for node in iter_column(t):
-                # si compute_greeks -> on force la création (évite pruning asymétrique)
-                if (not compute_greeks) and self._should_prune_node(node):
+                if self._should_prune_node(node):
                     node.prune_monomial(self, dividend=dividend)
                 else:
                     node.create_children(self, i, dividend=dividend)
@@ -99,50 +96,61 @@ class TrinomialTree(Model):
 
         return root
 
-    def _bump_size(self, bump_eps: float, bump_mode: str) -> float:
-        """Retourne h (taille du bump) selon le mode."""
-        return (bump_eps * self.market.S0) if bump_mode == "relative" else bump_eps
-
-    def _create_root_siblings_for_greeks(
-        self, root: "Node", bump_eps: float, bump_mode: str
-    ) -> None:
+    def delta(self) -> float:
         """
-        Crée deux nœuds FRÈRES (up/down) autour de la racine, dans la même colonne.
-        Ce ne sont PAS des enfants (pas de next_*).
+        Δ via bump multiplicatif centré dans le log-espace.
         """
-        h = self._bump_size(bump_eps, bump_mode)
-        sup = root.S + h
-        sdn = root.S - h
+        hlog = self._get_bump()          # = ln(alpha)
+        S0 = self.market.S0
+        Vup = self.root.up.option_value
+        Vdn = self.root.down.option_value
+        return (Vup - Vdn) / (2.0 * S0 * hlog)
 
-        up0   = Node(S=sup, proba=1.0)
+
+    def gamma(self) -> float:
+        """
+        Γ via bump multiplicatif (relation entre dérivées en S et en ln S).
+        """
+        hlog = self._get_bump()          # = ln(alpha)
+        S0 = self.market.S0
+        V0  = self.root.option_value
+        Vup = self.root.up.option_value
+        Vdn = self.root.down.option_value
+
+        g1  = (Vup - Vdn) / (2.0 * hlog)                 # g'(0)
+        g2  = (Vup - 2.0*V0 + Vdn) / (hlog ** 2)         # g''(0)
+        return (g2 - g1) / (S0 ** 2)
+    
+    def _get_bump(self) -> float:
+        """
+        Renvoie le pas *logarithmique* naturel pour le bump multiplicatif.
+        """
+        if self.root.option_value is None:
+            raise Exception("Vous devez d'abord exécuter le pricer de l'arbre.")
+        if getattr(self.root, "up", None) is None or getattr(self.root, "down", None) is None:
+            raise Exception("Activez l'option compute_greeks du pricer.")
+        # pas en log (dimensionless)
+        return np.log(self.alpha)
+
+
+    def _create_root_siblings_for_greeks(self, root: Node) -> None:
+        """
+        Crée deux nœuds frères multiplicativement espacés par le facteur u = alpha.
+        """
+        u = self.alpha                     # facteur up de l'arbre
+        sup = root.S * u
+        sdn = root.S / u
+
+        up0 = Node(S=sup, proba=1.0)
         down0 = Node(S=sdn, proba=1.0)
-
         up0.tree = self; down0.tree = self
         up0.trunc = root; down0.trunc = root
         up0.prev_trunc = None; down0.prev_trunc = None
 
-        # liens verticaux (même colonne 0)
+        # liens verticaux colonne 0
         root.up = up0; up0.down = root
         root.down = down0; down0.up = root
 
-    def _extract_greeks_from_root(self, v0: float, h: float) -> dict:
-        """
-        Lit les valeurs déjà fixées par price_backward() sur root.up / root.down.
-        Calcule Delta et Gamma centrés.
-        """
-        up_node = getattr(self.root, "up", None)
-        dn_node = getattr(self.root, "down", None)
-        if up_node is None or dn_node is None:
-            return {"delta": None, "gamma": None}
-
-        v_up = up_node.option_value
-        v_dn = dn_node.option_value
-        if v_up is None or v_dn is None:
-            return {"delta": None, "gamma": None}
-
-        delta = (v_up - v_dn) / (2.0 * h)
-        gamma = (v_up - 2.0 * v0 + v_dn) / (h ** 2)
-        return {"delta": float(delta), "gamma": float(gamma)}
 
     def _should_prune_node(self, node) -> bool:
         # full-monomial si la masse arrivée sur ce nœud est trop faible

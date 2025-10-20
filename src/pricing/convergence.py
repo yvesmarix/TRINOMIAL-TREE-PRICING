@@ -2,12 +2,12 @@ import datetime as dt
 import numpy as np
 import matplotlib.pyplot as plt
 
+from pricing import BlackScholesPricer, TrinomialTree
+
 def bs_convergence_by_strike(
     market, option, strikes, n_steps=200, pruning=True, epsilon=1e-7
 ):
-    from pricing import BlackScholesPricer, TrinomialTree
 
-    Tree = TrinomialTree
     pricing_date = dt.datetime.today()
     time_to_maturity = (option.maturity - pricing_date).days / 365
 
@@ -23,6 +23,15 @@ def bs_convergence_by_strike(
         dividend_date=getattr(market, "dividend_date", None),
     )
 
+    # Instanciation Tree
+    tree = TrinomialTree(
+    market,
+    N=n_steps,
+    pruning=pruning,
+    epsilon=epsilon,
+    pricingDate=pricing_date,
+    )
+
     k_values, bs_values, tree_values = [], [], []
     for k in strikes:
         # Option clonée avec strike k pour l’arbre
@@ -32,15 +41,8 @@ def bs_convergence_by_strike(
             maturity=option.maturity,
             option_class=option.option_class,
         )
-        tree = Tree(
-            market,
-            opt_k,
-            N=n_steps,
-            pruning=pruning,
-            epsilon=epsilon,
-            pricingDate=pricing_date,
-        )
-        tree_price = tree.price(build_tree=True)
+
+        tree_price = tree.price(opt_k, build_tree=True)
 
         # BS avec K mis à jour (OOP)
         bs.update(K=k)
@@ -64,9 +66,6 @@ def bs_convergence_by_strike(
 def bs_convergence_by_step(
     market, option, max_n=400, step=25, pruning=True, epsilon=1e-7
 ):
-    from pricing import BlackScholesPricer, TrinomialTree
-
-    Tree = TrinomialTree
     pricing_date = dt.datetime.today()
     time_to_maturity = (option.maturity - pricing_date).days / 365
 
@@ -85,14 +84,13 @@ def bs_convergence_by_step(
 
     n_values = np.arange(step, max_n + 1, step, dtype=int)
     tree_prices = [
-        Tree(
+        TrinomialTree(
             market,
-            option,
             N=n,
             pruning=pruning,
             epsilon=epsilon,
             pricingDate=pricing_date,
-        ).price(build_tree=True)
+        ).price(option, build_tree=True)
         for n in n_values
     ]
     abs_errors = np.abs(np.array(tree_prices) - bs_price)
