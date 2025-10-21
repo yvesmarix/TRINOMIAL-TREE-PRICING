@@ -1,334 +1,343 @@
-from csv import Error
 import numpy as np
 import datetime as dt
 import matplotlib.pyplot as plt
+from typing import Literal, Optional, List, Tuple
 from matplotlib.collections import LineCollection
-from collections import deque
-from node import Node
+
 from model import Model
+from node import Node
 from option import Option
-from funcs import compute_forward, compute_variance, compute_probabilities, iter_column
-from typing import *
+from market import Market
+from funcs import (
+    compute_forward,
+    compute_variance,
+    compute_probabilities,
+    iter_column,
+)
+
 
 class TrinomialTree(Model):
     """
-    Arbre trinomial (construction « verticale » colonne par colonne).
-
-    Idées directrices:
-    - On stocke dans chaque Node: S (spot), proba (masse cumulée d'arriver là),
-      liens verticaux (up/down) + liens horizontaux (next_* vers colonne t+1).
-    - On construit la colonne t+1 à partir du noeud central (mid) puis on
-      « grimpe » vers le haut et on « descend » vers le bas.
-    - Pruning (optionnel): si la probabilité totale future d'un up/down potentiel
-      est trop petite (< epsilon) on ne crée pas la branche; on redirige la masse
-      vers le mid => transition monomiale (variance réduite localement).
-    - Dividende: à l’étape ex-div on recalibre la position du mid autour
-      de l’espérance forward - D (en déplaçant le mid si besoin) puis on
-      recalcule les probabilités avec ce nouveau centre.
-
-    Hypothèses:
-    - Probabilités (p_down, p_mid, p_up) constantes entre deux dates de dividende.
-    - price_backward du Node sait traiter l’absence de certaines branches
-      (sinon prévoir garde-fous).
+    Arbre trinomial (construction verticale colonne par colonne).
+    Gere pruning, dividendes et calculs de grecs.
     """
 
     def __init__(
-        self, market, N, pruning: bool = False, epsilon=None, pricingDate=None
-    ):
+        self,
+        market: Market,
+        N: int,
+        pruning: bool = False,
+        epsilon: Optional[float] = None,
+        pricingDate: Optional[dt.datetime] = None,
+    ) -> None:
+        """Initialise le modele avec parametres de marche et profondeur N."""
         self.market = market
         self.N = N
-        # seuil absolu de pruning (probabilité minimale pour créer la branche)
-        self.epsilon = epsilon if epsilon is not None else 1e-7
+        # decision de pruner (utile pour du debug)
         self.pruning = pruning
-        super().__init__(pricingDate if pricingDate else dt.datetime.today())
+        self.epsilon = epsilon if epsilon is not None else 1e-7
+        super().__init__(pricingDate or dt.datetime.today())
 
+    # ------------------------------------------------------------------ #
+    # Pricing
+    # ------------------------------------------------------------------ #
     def price(
         self,
         option: Option,
-        mode: Literal["backward", "recursive"] = "backward",
+        method: Literal["backward", "recursive"] = "backward",
         build_tree: bool = False,
         compute_greeks: bool = False,
-    ):
+    ) -> float:
         """
-        Calcule le prix (backward ou recursive). Optionnellement, prépare deux frères au-dessus/en-dessous
-        de la racine pour obtenir Δ et Γ en un seul backward.
+        Calcule le prix d'une option via arbre trinomial (backward ou recursif).
+        Si build_tree=True, reconstruit l’arbre complet avant le pricing.
         """
         if build_tree or not hasattr(self, "root") or self.root is None:
-            # define new option
             self.option = option
             self._compute_parameters(self.market.S0, dividend=False)
-            self.root = self._build_tree(
-                compute_greeks=compute_greeks)
+            self.root = self._build_tree(compute_greeks)
+        return self.root.price(option, method)
 
-        if mode == "backward":
-            return self.root.price_backward(self.option)
-        elif mode == "recursive":
-            return self.root.price_recursive(self.option)
-        else:
-            raise ValueError("Mode must be either 'backward' or 'recursive'")
-
-    
-    def _build_tree(
-        self,
-        compute_greeks: bool = False,
-    ) -> Node:
-        # racine
-        root = Node(S=self.market.S0, proba=1.0); root.tree = self; root.trunc = root
-
-        # grecs: on ajoute 2 frères sur la colonne 0
+    # ------------------------------------------------------------------ #
+    # Construction
+    # ------------------------------------------------------------------ #
+    def _build_tree(self, compute_greeks: bool = False) -> Node:
+        """Construit l'arbre colonne par colonne et renvoie la racine."""
+        # on instancie la racine
+        root = Node(S=self.market.S0, proba=1.0)
+        root.tree, root.trunc = self, root
+        # si on veut delta gamma en un pricing on fait un noeud
+        # au dessus/dessous decales de log(alpha)
         if compute_greeks:
             self._create_root_siblings_for_greeks(root)
 
-        # construction colonne par colonne
-        t = root
-        div_step = self._compute_div_step()
+        t = root # premiere colonne
+        div_step = self._compute_div_step() # nombre de delta_t au div
 
         for i in range(self.N):
             dividend = (div_step == i + 1 and self.market.dividend > 0)
             for node in iter_column(t):
-                if self._should_prune_node(node):
-                    node.prune_monomial(self, dividend=dividend)
+                if self._should_prune_node(node): # decision de pruner
+                    node.prune_monomial(self, dividend)
                 else:
-                    node.create_children(self, i, dividend=dividend)
-            if dividend:
-                self._compute_parameters(t.S) # retour aux probas classiques
+                    node.create_children(self, i, dividend) # creation du triplet
+            if dividend: # on revient aux anciennes probas
+                self._compute_parameters(t.S)
             t = t.next_mid
-
         return root
 
+    # ------------------------------------------------------------------ #
+    # Grecs
+    # ------------------------------------------------------------------ #
     def delta(self) -> float:
-        """
-        Δ via bump multiplicatif centré dans le log-espace.
-        """
-        hlog = self._get_bump()          # = ln(alpha)
+        """Δ via bump multiplicatif centre en log(S)."""
+        h = self._get_bump()
         S0 = self.market.S0
-        Vup = self.root.up.option_value
-        Vdn = self.root.down.option_value
-        return (Vup - Vdn) / (2.0 * S0 * hlog)
-
+        return (self.root.up.option_value - self.root.down.option_value) / (2 * S0 * h)
 
     def gamma(self) -> float:
-        """
-        Γ via bump multiplicatif (relation entre dérivées en S et en ln S).
-        """
-        hlog = self._get_bump()          # = ln(alpha)
-        S0 = self.market.S0
-        V0  = self.root.option_value
-        Vup = self.root.up.option_value
-        Vdn = self.root.down.option_value
+        """Γ via derivees finies dans l’espace log(S)."""
+        h, S0 = self._get_bump(), self.market.S0
+        Vu, Vd, V0 = self.root.up.option_value, self.root.down.option_value, self.root.option_value
+        g1, g2 = (Vu - Vd) / (2 * h), (Vu - 2 * V0 + Vd) / (h**2)
+        return (g2 - g1) / (S0**2)
 
-        g1  = (Vup - Vdn) / (2.0 * hlog)                 # g'(0)
-        g2  = (Vup - 2.0*V0 + Vdn) / (hlog ** 2)         # g''(0)
-        return (g2 - g1) / (S0 ** 2)
-    
+    def vega(self, option: Option, bump: float = 0.01) -> float:
+        """Vega : derivee du prix par rapport à la volatilite sigma."""
+        sigma0 = self.market.sigma
+        self.market.sigma = sigma0 * (1 + bump)
+        up = self.price(option, build_tree=True)
+        self.market.sigma = sigma0 * (1 - bump)
+        down = self.price(option, build_tree=True)
+        self.market.sigma = sigma0
+        return (up - down) / (2 * sigma0 * bump) / 100
+
+    def vanna(self, option: Option, bump_sigma: float = 0.01, bump_S: float = 0.01) -> float:
+        """Vanna : derivee croisee (∂²V / ∂S∂sigma)."""
+        S0, sigma0 = self.market.S0, self.market.sigma
+
+        # V(S+, sigma+)
+        self.market.S0, self.market.sigma = S0 * (1 + bump_S), sigma0 * (1 + bump_sigma)
+        up_up = self.price(option, build_tree=True)
+        # V(S-, sigma-)
+        self.market.S0, self.market.sigma = S0 * (1 - bump_S), sigma0 * (1 - bump_sigma)
+        dn_dn = self.price(option, build_tree=True)
+        # V(S+, sigma-)
+        self.market.S0, self.market.sigma = S0 * (1 + bump_S), sigma0 * (1 - bump_sigma)
+        up_dn = self.price(option, build_tree=True)
+        # V(S-, sigma+)
+        self.market.S0, self.market.sigma = S0 * (1 - bump_S), sigma0 * (1 + bump_sigma)
+        dn_up = self.price(option, build_tree=True)
+
+        # on retabli les parametres
+        self.market.S0, self.market.sigma = S0, sigma0
+
+        return (up_up + dn_dn - up_dn - dn_up) / (4 * S0 * sigma0 * bump_S * bump_sigma) / 100
+
+    def rho(self, option: Option, bump: float = 0.0001) -> float:
+        """Rho : derivee du prix par rapport au taux sans risque r."""
+        r0 = self.market.r
+        self.market.r = r0 + bump
+        up = self.price(option, build_tree=True)
+        self.market.r = r0 - bump
+        down = self.price(option, build_tree=True)
+        self.market.r = r0
+        return (up - down) / (2 * bump) / 100
+
     def _get_bump(self) -> float:
-        """
-        Renvoie le pas *logarithmique* naturel pour le bump multiplicatif.
-        """
-        if self.root.option_value is None:
-            raise Exception("Vous devez d'abord exécuter le pricer de l'arbre.")
-        if getattr(self.root, "up", None) is None or getattr(self.root, "down", None) is None:
-            raise Exception("Activez l'option compute_greeks du pricer.")
-        # pas en log (dimensionless)
+        """Renvoie le pas log du bump (ln(alpha))."""
+        if not getattr(self.root, "up", None) or not getattr(self.root, "down", None):
+            raise RuntimeError("Activez compute_greeks dans price().")
         return np.log(self.alpha)
 
-
     def _create_root_siblings_for_greeks(self, root: Node) -> None:
+        """Cree deux nœuds freres pour Δ et Γ.
+        --> Utile pour ne faire qu'un seul pricing pour delta et gamma.
         """
-        Crée deux nœuds frères multiplicativement espacés par le facteur u = alpha.
-        """
-        u = self.alpha                     # facteur up de l'arbre
-        sup = root.S * u
-        sdn = root.S / u
+        u, S = self.alpha, root.S
+        up, down = Node(S * u, 1.0), Node(S / u, 1.0)
+        for n in (up, down):
+            n.tree, n.trunc, n.prev_trunc = self, root, None
+        root.up, root.down = up, down
+        up.down, down.up = root, root
 
-        up0 = Node(S=sup, proba=1.0)
-        down0 = Node(S=sdn, proba=1.0)
-        up0.tree = self; down0.tree = self
-        up0.trunc = root; down0.trunc = root
-        up0.prev_trunc = None; down0.prev_trunc = None
+    # ------------------------------------------------------------------ #
+    # Parametres locaux
+    # ------------------------------------------------------------------ #
+    def _should_prune_node(self, node: Node) -> bool:
+        """Retourne True si la proba du nœud < epsilon (pruning actif)."""
+        return self.pruning and node.proba < self.epsilon
 
-        # liens verticaux colonne 0
-        root.up = up0; up0.down = root
-        root.down = down0; down0.up = root
-
-
-    def _should_prune_node(self, node) -> bool:
-        # full-monomial si la masse arrivée sur ce nœud est trop faible
-        return self.pruning and (node.proba < self.epsilon)
-
-    def _compute_parameters(self, S: float, S1_mid: float = None, dividend: bool = False, validate: bool = True) -> None:
-        """
-        Calibrage local.
-        Si validate=False, on n'asserte pas (utile pendant le recentrage du mid).
-        """
+    def _compute_parameters(
+        self,
+        S: float,
+        S1_mid: Optional[float] = None,
+        dividend: bool = False,
+        validate: bool = True,
+    ) -> None:
+        """Calibre les parametres alpha, p_up, p_mid, p_down."""
         self.delta_t = (self.option.maturity - self.pricing_date).days / self.N / 365
         self.alpha = np.exp(self.market.sigma * np.sqrt(3 * self.delta_t))
-
-        forward  = compute_forward(S, self.market.r, self.delta_t)
-        esperance = forward - self.market.dividend if dividend else forward
-        variance = compute_variance(S, self.market.r, self.delta_t, self.market.sigma)
-
+        # inputes probas
+        fwd = compute_forward(S, self.market.r, self.delta_t)
+        E = fwd - self.market.dividend if dividend else fwd
+        var = compute_variance(S, self.market.r, self.delta_t, self.market.sigma)
+        # calcule des probas
         self.p_down, self.p_up, self.p_mid = compute_probabilities(
-            esperance, S1_mid if dividend else forward, variance, self.alpha, dividend
+            E, S1_mid if dividend else fwd, var, self.alpha, dividend
         )
+        # check bornes
         if validate:
             self._assert_probabilities(self.p_down, self.p_up, self.p_mid)
 
+    def _assert_probabilities(self, pd: float, pu: float, pm: float) -> None:
+        """Verifie que les probabilites sont valides et somment à 1."""
+        self.check_probability(pd, "p_down")
+        self.check_probability(pu, "p_up")
+        self.check_probability(pm, "p_mid")
+        if not np.isclose(pd + pm + pu, 1.0, atol=1e-12):
+            raise AssertionError("Somme des probabilites ≠ 1.")
 
-    def _assert_probabilities(self, p_down, p_up, p_mid):
-        """
-        Vérifie: chaque proba dans [0,1] et somme ≈ 1. Sinon on lève une AssertionError.
-        """
-        self.check_probability(p_down, "p_down")
-        self.check_probability(p_up, "p_up")
-        self.check_probability(p_mid, "p_mid")
-        if not np.isclose(p_down + p_mid + p_up, 1.0, atol=1e-12):
-            raise AssertionError("La somme des probabilités est différente de 1.")
-
-    def _compute_div_step(self):
-        """
-        Calcule l'index d'étape où le dividende tombe (en partant de la fin).
-        Retour:
-        - None si pas de dividende configuré.
-        - Entier dans [1, N] sinon.
-        """
-        if not getattr(self.market, "dividend_date", None) or not getattr(self.market, "dividend", 0):
+    def _compute_div_step(self) -> Optional[int]:
+        """Renvoie l’etape correspondant à la date de dividende, ou None."""
+        if not getattr(self.market, "dividend_date", None) or not self.market.dividend:
             return None
         years = (self.market.dividend_date - self.pricing_date).days / 365
-        div_step = int(np.floor(years / self.delta_t + 1e-12))
-        return max(1, min(div_step, self.N))
+        step = int(np.floor(years / self.delta_t + 1e-12))
+        return max(1, min(step, self.N))
 
+    # ------------------------------------------------------------------ #
+    # Visualisation
+    # ------------------------------------------------------------------ #
     def plot_tree(
         self,
-        max_depth=None,
+        max_depth: Optional[int] = None,
         proba_min: float = 1e-9,
-        y_min: float | None = None,
-        y_max: float | None = None,
+        y_min: Optional[float] = None,
+        y_max: Optional[float] = None,
         percentile_clip: float = 0.0,
         edge_alpha: float = 0.35,
         linewidth: float = 0.4,
-    ):
-        """Tracé rapide : y = S, liens + nœuds, dédup, rasterize."""
-        self._assert_tree_built()
-        depth = self.N if max_depth is None else max_depth
-
-        xs, ys, sizes, edges, all_S = self._collect_nodes_and_edges(
-            depth=depth, proba_min=proba_min
-        )
+    ) -> None:
+        """Trace l’arbre trinomial jusqu’à `max_depth`."""
+        self._assert_tree_built()  # on s'assure d'abord qu'on a bien construit l'arbre
+        depth = self.N if max_depth is None else max_depth  # profondeur cible (par defaut toute la hauteur)
+        # on recupere les points et les arêtes dejà dedupliques
+        xs, ys, sizes, edges, all_S = self._collect_nodes_and_edges(depth, proba_min)
         if not xs:
-            raise RuntimeError("Aucun nœud à afficher (proba_min trop élevée ?).")
-
+            # affichage inutile si on a tout filtre (probas trop petites)
+            raise RuntimeError("aucun nœud à afficher (proba trop faible).")
+        # bornes verticales automatiques (ou forcees si y_min/y_max fournis)
         y_min, y_max = self._compute_ylim(all_S, y_min, y_max, percentile_clip)
+        # rendu final
         self._draw_graph(xs, ys, sizes, edges, y_min, y_max, edge_alpha, linewidth)
 
+
     def _assert_tree_built(self) -> None:
+        """Verifie que l’arbre a ete construit avant affichage."""
         if not hasattr(self, "root") or self.root is None:
-            raise RuntimeError("Arbre non construit. Appelle price(build_tree=True).")
+            # on evite de faire un joli plot… du vide
+            raise RuntimeError("arbre non construit. utilisez price(build_tree=True).")
 
-    def _collect_nodes_and_edges(self, depth: int, proba_min: float):
-        """BFS dédupliqué → positions, tailles, segments et liste des S pour les bornes.
-        Aligne tous les nœuds de la colonne 0 sur x=0.
-        """
+
+    def _collect_nodes_and_edges(
+        self, depth: int, proba_min: float
+    ) -> Tuple[List[float], List[float], List[float], List[Tuple[tuple, tuple]], List[float]]:
+        """Parcours bfs pour recuperer positions, tailles et arêtes du graphe."""
         from collections import deque
-        from typing import List, Tuple
 
-        visited, seen_edges = set(), set()
-        queue = deque([(n, 0) for n in iter_column(self.root)])
+        visited, seen = set(), set()      # pour eviter de repasser sur les mêmes nœuds/segments
+        q = deque([(n, 0) for n in iter_column(self.root)])  # colonne 0 : racine + eventuels freres
+        xs, ys, sizes, edges, all_S = [], [], [], [], []     # buffers de sortie
 
-        xs: List[float] = []
-        ys: List[float] = []
-        sizes: List[float] = []
-        edges: List[Tuple[tuple, tuple]] = []
-        all_S: List[float] = []
-
-        def x_of(_node, lvl: int) -> float:
-            # -> tous les nœuds de la colonne 0 (racine et ses frères) à x=0
+        def x_of(_node, lvl): 
+            # on force x=0 sur la colonne 0 (racine et freres) pour un alignement propre
             return 0.0 if lvl == 0 else float(lvl)
 
-        def push_edge(parent, lvl: int, S0: float, child):
-            if child is None:
-                return
-            eid = (id(parent), id(child))
-            if eid not in seen_edges:
-                px = x_of(parent, lvl)
-                cx = x_of(child,  lvl + 1)
-                edges.append([(px, S0), (cx, getattr(child, "S", S0))])
-                seen_edges.add(eid)
-
-        while queue:
-            node, lvl = queue.popleft()
-            if node is None or lvl > depth:
+        while q:
+            n, lvl = q.popleft()
+            if not n or lvl > depth or id(n) in visited:
+                # on saute si on a depasse la profondeur, ou dejà vu
                 continue
-            nid = id(node)
-            if nid in visited:
-                continue
-            visited.add(nid)
+            visited.add(id(n))
 
-            p = float(getattr(node, "proba", 0.0) or 0.0)
-            S = getattr(node, "S", None)
+            p = float(getattr(n, "proba", 0.0))
+            S = getattr(n, "S", None)
             if S is None:
+                # pas de spot = pas d’affichage
                 continue
             all_S.append(S)
 
             if p >= proba_min:
-                xs.append(x_of(node, lvl))        # x=0 pour t=0
+                # on garde le nœud s'il porte assez de masse
+                xs.append(x_of(n, lvl))
                 ys.append(S)
-                sizes.append(max(min(p, 1.0), 1e-16) * 1500.0)
+                # taille proportionnelle à la proba (borne basse pour voir qqch)
+                sizes.append(max(min(p, 1.0), 1e-16) * 1500)
 
-            up  = getattr(node, "next_up", None)
-            mid = getattr(node, "next_mid", None)
-            dn  = getattr(node, "next_down", None)
+                # on ajoute les segments vers les enfants (up/mid/down)
+                for ch in (n.next_up, n.next_mid, n.next_down):
+                    if ch and (id(n), id(ch)) not in seen:
+                        edges.append([(x_of(n, lvl), S), (x_of(ch, lvl + 1), ch.S)])
+                        seen.add((id(n), id(ch)))
 
-            if p >= proba_min:
-                push_edge(node, lvl, S, up)
-                push_edge(node, lvl, S, mid)
-                push_edge(node, lvl, S, dn)
-
-            if up:  queue.append((up,  lvl + 1))
-            if mid: queue.append((mid, lvl + 1))
-            if dn:  queue.append((dn,  lvl + 1))
+            # on pousse les enfants dans la queue bfs (même si proba trop faible pour le display)
+            for ch in (n.next_up, n.next_mid, n.next_down):
+                if ch:
+                    q.append((ch, lvl + 1))
 
         return xs, ys, sizes, edges, all_S
 
 
-    def _compute_ylim(self, all_S, y_min, y_max, percentile_clip: float):
-        """Bornes Y explicites ou automatiques (avec clip optionnel)."""
-        import numpy as np
-        if y_min is not None and y_max is not None:
-            return y_min, y_max
-
-        Svals = np.asarray(all_S, float)
-        if 0.0 < percentile_clip < 0.5:
-            lo = float(np.quantile(Svals, percentile_clip))
-            hi = float(np.quantile(Svals, 1 - percentile_clip))
+    def _compute_ylim(
+        self,
+        all_S: List[float],
+        y_min: Optional[float],
+        y_max: Optional[float],
+        clip: float,
+    ) -> Tuple[float, float]:
+        """Definit les bornes y du trace automatiquement ou manuellement."""
+        Svals = np.asarray(all_S)
+        if 0.0 < clip < 0.5:
+            # on clippe les extrêmes (optionnel) pour eviter des axes trop etires
+            lo, hi = np.quantile(Svals, clip), np.quantile(Svals, 1 - clip)
         else:
-            lo, hi = float(Svals.min()), float(Svals.max())
+            lo, hi = Svals.min(), Svals.max()
 
+        # petite marge pour que les points ne touchent pas les bords
         span = max(1e-12, hi - lo)
-        lo -= 0.03 * span
-        hi += 0.03 * span
+        lo, hi = lo - 0.03 * span, hi + 0.03 * span
 
-        return (y_min if y_min is not None else lo,
-                y_max if y_max is not None else hi)
+        # si l’utilisateur force y_min/y_max, on respecte
+        return y_min or lo, y_max or hi
 
-    def _draw_graph(self, xs, ys, sizes, edges, y_min, y_max, edge_alpha, linewidth):
-        """Rendu matplotlib performant : LineCollection + scatter rasterized."""
-        import matplotlib.pyplot as plt
-        from matplotlib.collections import LineCollection
 
+    def _draw_graph(
+        self,
+        xs: List[float],
+        ys: List[float],
+        sizes: List[float],
+        edges: List[Tuple[tuple, tuple]],
+        y_min: float,
+        y_max: float,
+        edge_alpha: float,
+        linewidth: float,
+    ) -> None:
+        """Trace les liens et les nœuds (linecollection + scatter)."""
         fig, ax = plt.subplots(figsize=(14, 9))
 
+        # les arêtes en LineCollection : beaucoup plus rapide que plein de plot()
         if edges:
-            lc = LineCollection(edges, linewidths=linewidth, alpha=edge_alpha)
-            lc.set_rasterized(True)
+            lc = LineCollection(edges, linewidths=linewidth, alpha=edge_alpha, rasterized=True)
             ax.add_collection(lc)
 
+        # les nœuds : un scatter rasterized pour rester fluide quand il y en a beaucoup
         ax.scatter(xs, ys, s=sizes, alpha=0.7, rasterized=True, linewidths=0)
 
-        ax.set_title("Arbre trinomial", fontsize=14)
-        ax.set_xlabel("Étapes (t)")
-        ax.set_ylabel("Sous-jacent S")
+        # titres/axes : on reste sobre
+        ax.set(title="arbre trinomial", xlabel="etapes (t)", ylabel="sous-jacent S")
         ax.set_ylim(y_min, y_max)
-        ax.grid(True, linestyle="--", alpha=0.35)
+        ax.grid(True, ls="--", alpha=0.35)
+
         fig.tight_layout()
         plt.show()
