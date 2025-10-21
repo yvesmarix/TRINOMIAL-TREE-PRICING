@@ -1,5 +1,15 @@
 import numpy as np
-
+from typing import Optional, TYPE_CHECKING
+if TYPE_CHECKING:
+    from trinomial_tree import TrinomialTree
+    
+def probas_valid(tree: Optional["TrinomialTree"]) -> bool:
+    """Verifie que les probabilites sont valides et sommees a 1."""
+    p_down, p_up, p_mid = tree.p_down, tree.p_up, tree.p_mid
+    return (
+        0 <= p_down <= 1 and 0 <= p_mid <= 1 and 0 <= p_up <= 1
+        and abs(p_down + p_mid + p_up - 1.0) <= 1e-12
+    )
 
 def compute_forward(S: float, r: float, dt: float) -> float:
     """Calcule le forward attendu : S·e^(r·Δt)."""

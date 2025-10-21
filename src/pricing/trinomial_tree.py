@@ -8,12 +8,7 @@ from model import Model
 from node import Node
 from option import Option
 from market import Market
-from funcs import (
-    compute_forward,
-    compute_variance,
-    compute_probabilities,
-    iter_column,
-)
+from funcs import *
 
 
 class TrinomialTree(Model):
@@ -188,15 +183,7 @@ class TrinomialTree(Model):
         )
         # check bornes
         if validate:
-            self._assert_probabilities(self.p_down, self.p_up, self.p_mid)
-
-    def _assert_probabilities(self, pd: float, pu: float, pm: float) -> None:
-        """Verifie que les probabilites sont valides et somment à 1."""
-        self.check_probability(pd, "p_down")
-        self.check_probability(pu, "p_up")
-        self.check_probability(pm, "p_mid")
-        if not np.isclose(pd + pm + pu, 1.0, atol=1e-12):
-            raise AssertionError("Somme des probabilites ≠ 1.")
+            probas_valid(self)
 
     def _compute_div_step(self) -> Optional[int]:
         """Renvoie l’etape correspondant à la date de dividende, ou None."""

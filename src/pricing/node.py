@@ -1,31 +1,26 @@
 import numpy as np
-from typing import Optional
-from pricing.funcs import iter_column, compute_forward
+from typing import Optional, TYPE_CHECKING
+if TYPE_CHECKING:
+    from trinomial_tree import TrinomialTree
 
+from dataclasses import dataclass
+from pricing.funcs import iter_column, probas_valid
 
+@dataclass
 class Node:
     """Nœud d’un arbre trinomial (spot, proba, liens et valeur d’option)."""
 
-    def __init__(
-        self,
-        S: float,
-        proba: float,
-        up: Optional["Node"] = None,
-        down: Optional["Node"] = None,
-        next_up: Optional["Node"] = None,
-        next_mid: Optional["Node"] = None,
-        next_down: Optional["Node"] = None,
-        trunc: Optional["Node"] = None,
-        prev_trunc: Optional["Node"] = None,
-        option_value: Optional[float] = None,
-    ) -> None:
-        """Initialise un nœud avec son spot, sa probabilite et ses liens."""
-        self.S, self.proba = S, proba
-        self.up, self.down = up, down
-        self.next_up, self.next_mid, self.next_down = next_up, next_mid, next_down
-        self.trunc, self.prev_trunc = trunc, prev_trunc
-        self.option_value: Optional[float] = option_value
-        self.tree: Optional[object] = None
+    S: float
+    proba: float
+    up: Optional["Node"]=None
+    down: Optional["Node"]=None
+    next_up: Optional["Node"]=None
+    next_mid: Optional["Node"]=None
+    next_down: Optional["Node"]=None
+    trunc: Optional["Node"]=None
+    prev_trunc: Optional["Node"]=None
+    option_value: Optional[float]=None
+    tree: Optional["TrinomialTree"]=None
 
     # ------------------------------------------------------------------ #
     # Pricing
@@ -45,14 +40,17 @@ class Node:
         if self._is_leaf(): # payoff aux feuilles
             self.option_value = option.payoff(self.S)
             return self.option_value
+        
         # partie recursive
         v_up = self.next_up.price_recursive(option) if self.next_up else 0.0
         v_mid = self.next_mid.price_recursive(option) if self.next_mid else 0.0
         v_dn = self.next_down.price_recursive(option) if self.next_down else 0.0
+
         # attribution des valeurs
         if self.next_up: self.next_up.option_value = v_up
         if self.next_mid: self.next_mid.option_value = v_mid
         if self.next_down: self.next_down.option_value = v_dn
+
         # application du type d'exercice
         cont = self._continuation_from_children()
         self.option_value = self._apply_exercise_rule(option, cont)
@@ -63,12 +61,14 @@ class Node:
         if option is None:
             raise ValueError("Option requise pour le pricing backward.")
         last_mid = self.tree.root
+
         while last_mid.next_mid: # direction la fin de l'arbre
             last_mid = last_mid.next_mid
+
         for leaf in iter_column(last_mid): # payoff aux feuilles
             leaf.option_value = option.payoff(leaf.S)
 
-        mid = last_mid
+        mid = last_mid # on se place au trunc du fond
         while mid.prev_trunc:
             prev_mid = mid.prev_trunc
             for n in iter_column(prev_mid): # on traverse l'arbre en backward
@@ -80,77 +80,83 @@ class Node:
     # ------------------------------------------------------------------ #
     # Construction des enfants
     # ------------------------------------------------------------------ #
-    def create_mid(self, tree: Optional[object]) -> None:
+    def create_mid(self, tree: Optional["TrinomialTree"]) -> None:
         """Cree le nœud central (mid) pour la colonne suivante."""
         proba_mid = self.proba * tree.p_mid
         s_mid = self._esperance(tree)
+
         if self.down and self.down.next_up: # logique fixe sans decalage
             # cumule des probas pour le pruning
             self.next_mid = self.down.next_up; self.down.next_up.proba += proba_mid
+            
         elif self.up and self.up.next_down: # on va chercher les noeuds existants
             # cumule des probas pour le pruning
             self.next_mid = self.up.next_down; self.up.next_down.proba += proba_mid
+        
         else: # sinon on cree
-            self.next_mid = Node(S=s_mid, proba=proba_mid)
-            self.next_mid.tree = tree # le noeud connait son arbre
+            self.next_mid = Node(S=s_mid, proba=proba_mid, tree=tree)
             self._attach_trunc_links(self.next_mid) # rattachement au trunc
 
-    def create_mid_w_div(self, tree: Optional[object], i: int) -> None:
+    def create_mid_w_div(self, tree: Optional["TrinomialTree"], i: int) -> None:
         """Cree le mid en tenant compte d’un dividende à l’etape courante."""
         esp = self._esperance(tree, True)
         cand = self._find_closest_node(esp) # recupere le meilleur candidat
-        self.next_mid = cand or Node(S=esp, proba=0.0)
-        self.next_mid.tree = tree # le noeud connait son arbre
+
+        self.next_mid = cand or Node(S=esp, proba=0.0, tree=tree)
         self._attach_trunc_links(self.next_mid) # rattachement au trunc
+
         # decalage tant que c'est pas borne
         self._recenter_mid_until_valid(tree, i, esp, dividend=True)
         self.next_mid.proba += self.proba * tree.p_mid # cumule des probas pour le pruning
         self._ensure_neighbor(tree) # verifie s'il existe des noeuds susceptibles d'être les freres
 
-    def create_up(self, tree: Optional[object]) -> None:
-        """Cree le nœud 'up' (t+1)."""
-        p_up = self.proba * tree.p_up
-        if self.next_up: # noeud dejà existant
-            self.next_up.proba += p_up; return
-        if self.up and self.up.next_mid: # decalage fixe
-            self.next_up = self.up.next_mid; self.up.next_mid.proba += p_up
-        else:
-            self.next_up = Node(S=self.next_mid.S * tree.alpha, proba=p_up)
-            self.next_up.tree = tree # le noeud connait son arbre
-            # rattachement au trunc
-            self.next_up.trunc, self.next_up.prev_trunc = self.next_mid.trunc, self.trunc
-            # connexions verticales
-            self.next_mid.up, self.next_up.down = self.next_up, self.next_mid
+    def _create_neighbor(self, tree: Optional["TrinomialTree"], kind: str):
+        """
+        Methode qui crée le noeud up ou down.
+        """
+        factor = tree.alpha if kind=="up" else 1/tree.alpha
+        p = self.proba * (tree.p_up if kind=="up" else tree.p_down)
+        next_attr = "next_up" if kind=="up" else "next_down"
+        sibling_attr = "up" if kind=="up" else "down"
 
-    def create_down(self, tree: Optional[object]) -> None:
-        """Cree le nœud 'down' (t+1)."""
-        p_down = self.proba * tree.p_down
-        if self.next_down: # noeud dejà existant
-            self.next_down.proba += p_down; return
-        if self.down and self.down.next_mid: # decalage fixe
-            self.next_down = self.down.next_mid; self.down.next_mid.proba += p_down
-        else:
-            self.next_down = Node(S=self.next_mid.S / tree.alpha, proba=p_down)
-            self.next_down.tree = tree # le noeud connait son arbre
-            # rattachement au trunc
-            self.next_down.trunc, self.next_down.prev_trunc = self.next_mid.trunc, self.trunc
-            # connexions verticales
-            self.next_mid.down, self.next_down.up = self.next_down, self.next_mid
+        # déjà existant
+        if getattr(self, next_attr):
+            setattr(getattr(self, next_attr), "proba", getattr(self, next_attr).proba + p)
+            return
 
-    def create_children(self, tree: Optional[object], i: int, dividend: bool = False) -> None:
+        # décalage fixe
+        sib = getattr(self, sibling_attr)
+        if sib and sib.next_mid:
+            setattr(self, next_attr, sib.next_mid); sib.next_mid.proba += p
+            return
+
+        # sinon on crée
+        node = Node(S=self.next_mid.S * factor, proba=p, tree=tree)
+        node.trunc, node.prev_trunc = self.next_mid.trunc, self.trunc
+        # connexions verticales
+        if kind=="up":
+            self.next_mid.up, node.down = node, self.next_mid
+        else:
+            self.next_mid.down, node.up = node, self.next_mid
+        setattr(self, next_attr, node)
+
+
+    def create_children(self, tree: Optional["TrinomialTree"], i: int, dividend: bool = False) -> None:
         """Cree les enfants up/mid/down du nœud."""
         if not dividend:
-            self.create_mid(tree); self.create_up(tree); self.create_down(tree)
+            self.create_mid(tree); self._create_neighbor(tree, 'up'); self._create_neighbor(tree, 'down')
         else:
             self.create_mid_w_div(tree, i)
 
-    def prune_monomial(self, tree: Optional[object], dividend: bool) -> None:
+    def prune_monomial(self, tree: Optional["TrinomialTree"], dividend: bool) -> None:
         """Prune les branches faibles (redirection vers le mid le plus proche)."""
         E = self._esperance(tree, is_dividend_step=dividend)
+        
         # candidat au mid le plus proche
         cand = self._find_closest_node(E)
         target = cand or Node(S=E, proba=0.0)
         target.tree = tree # le noeud connait son arbre
+
         if not cand: self._attach_trunc_links(target) # rattachement au trunc
         target.proba += self.proba # cumule des probas
         self.next_up = self.next_mid = self.next_down = target
@@ -158,7 +164,7 @@ class Node:
     # ------------------------------------------------------------------ #
     # Outils internes
     # ------------------------------------------------------------------ #
-    def _esperance(self, tree: Optional[object], is_dividend_step: bool = False) -> float:
+    def _esperance(self, tree: Optional["TrinomialTree"], is_dividend_step: bool = False) -> float:
         """Renvoie le forward espere (ajuste du dividende)."""
         fwd = self.S * np.exp(tree.market.r * tree.delta_t)  # forward simple
         return fwd - tree.market.dividend if is_dividend_step else fwd
@@ -172,13 +178,12 @@ class Node:
     def _next_column_nodes(self) -> list["Node"]:
         """Retourne tous les noeuds de la colonne suivante (t+1)."""
         # on cherche un centre valide pour t+1 (via mid sinon via voisins)
-        center = (
-            self.next_mid.trunc if self.next_mid
-            else self.down.next_mid.trunc if self.down and self.down.next_mid
-            else self.up.next_mid.trunc if self.up and self.up.next_mid
-            else None
-        )
-        return list(iter_column(center)) if center else []
+        candidates = [self.next_mid,
+                    self.down.next_mid if self.down else None,
+                    self.up.next_mid if self.up else None]
+        for c in candidates:
+            if c: return list(iter_column(c.trunc))
+        return []
 
     def _find_closest_node(self, target: float, above: Optional[bool] = None) -> Optional["Node"]:
         """Trouve le noeud le plus proche du prix cible (dans la colonne suivante)."""
@@ -192,7 +197,7 @@ class Node:
         # on renvoie le plus proche si existe
         return min(cand, key=lambda n: abs(n.S - target)) if cand else None
 
-    def _ensure_neighbor(self, tree: Optional[object]) -> None:
+    def _ensure_neighbor(self, tree: Optional["TrinomialTree"]) -> None:
         """Relie ou cree les voisins up/down autour du mid."""
         # partie down: on reutilise un voisin proche si possible sinon on cree
         if not self.next_down:
@@ -200,22 +205,14 @@ class Node:
             if cand:
                 self.next_down, cand.proba = cand, cand.proba + self.proba * tree.p_down
             else:
-                self.create_down(tree)
+                self._create_neighbor(tree, "down")
         # partie up: idem
         if not self.next_up:
             cand = self._find_closest_node(self.next_mid.S * tree.alpha, above=True)
             if cand:
                 self.next_up, cand.proba = cand, cand.proba + self.proba * tree.p_up
             else:
-                self.create_up(tree)
-
-    def _probas_valid(self, tree: Optional[object]) -> bool:
-        """Verifie que les probabilites sont valides et sommees a 1."""
-        p_down, p_up, p_mid = tree.p_down, tree.p_up, tree.p_mid
-        return (
-            0 <= p_down <= 1 and 0 <= p_mid <= 1 and 0 <= p_up <= 1
-            and abs(p_down + p_mid + p_up - 1.0) <= 1e-12
-        )
+                self._create_neighbor(tree, "up")
 
     def _shift_toward_expectation(self, E: float) -> bool:
         """Deplace next_mid d un cran vers l esperance."""
@@ -231,17 +228,15 @@ class Node:
         else:
             return False  # bloque aux bords
         # transfert de masse et mise a jour du pointeur
-        mid.proba -= proba_mid
-        new_mid.proba += proba_mid
-        self.next_mid = new_mid
+        mid.proba -= proba_mid; new_mid.proba += proba_mid; self.next_mid = new_mid
         return True
 
-    def _recenter_mid_until_valid(self, tree: Optional[object], i: int, E: float, dividend: bool) -> None:
+    def _recenter_mid_until_valid(self, tree: Optional["TrinomialTree"], i: int, E: float, dividend: bool) -> None:
         """Recentre le mid jusqu a obtenir des probabilites valides."""
         # on tente i iterations max: recalibre puis, si invalide, on bouge vers E
         for _ in range(i):
             tree._compute_parameters(self.S, self.next_mid.S, dividend=dividend, validate=False)
-            if self._probas_valid(tree):
+            if probas_valid(tree):
                 return  # ok, on arrete
             if not self._shift_toward_expectation(E):
                 break  # on ne peut plus bouger
@@ -272,12 +267,6 @@ class Node:
         """Applique la regle d exercice (Euro ou Americain)."""
         # americain: max(payoff, continuation) ; sinon continuation
         return max(option.payoff(self.S), cont) if option.option_class == "american" else cont
-
-    def _ensure_leaf_payoff(self, option) -> None:
-        """Assigne le payoff si le noeud est une feuille."""
-        # idempotent: ne recalcule pas si deja pose
-        if self._is_leaf() and self.option_value is None:
-            self.option_value = option.payoff(self.S)
 
     def _reset_option_values_column(self, mid) -> None:
         """Reinitialise les valeurs d option d une colonne."""
