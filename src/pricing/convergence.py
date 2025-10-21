@@ -17,13 +17,11 @@ def bs_convergence_by_strike(
     # Pricers (OOP)
     bs = BlackScholesPricer(
         S=market.S0, K=option.K, T=T, r=market.r, sigma=market.sigma,
-        option_type=option.option_type,
-        dividend=getattr(market, "dividend", 0.0),
+        option_type=option.option_type, dividend=getattr(market, "dividend", 0.0),
         dividend_date=getattr(market, "dividend_date", None),
     )
     tree = TrinomialTree(
-        market, N=n_steps, pruning=pruning,
-        epsilon=epsilon, pricingDate=pricing_date,
+        market, N=n_steps, pruning=pruning, epsilon=epsilon, pricingDate=pricing_date,
     )
 
     k_vals, bs_vals, tree_vals = [], [], []
@@ -32,9 +30,7 @@ def bs_convergence_by_strike(
             K=k, option_type=option.option_type,
             maturity=option.maturity, option_class=option.option_class,
         )
-        bs.update(K=k)
-        k_vals.append(k)
-        bs_vals.append(bs.price())
+        bs.update(K=k); k_vals.append(k); bs_vals.append(bs.price())
         tree_vals.append(tree.price(opt_k, build_tree=True))
 
     # --- graphique ---
@@ -58,8 +54,7 @@ def bs_convergence_by_step(
 
     bs = BlackScholesPricer(
         S=market.S0, K=option.K, T=T, r=market.r, sigma=market.sigma,
-        option_type=option.option_type,
-        dividend=getattr(market, "dividend", 0.0),
+        option_type=option.option_type, dividend=getattr(market, "dividend", 0.0),
         dividend_date=getattr(market, "dividend_date", None),
     )
     bs_price = bs.price()
@@ -67,8 +62,7 @@ def bs_convergence_by_step(
     n_vals = np.arange(step, max_n + 1, step, dtype=int)
     tree_prices = [
         TrinomialTree(
-            market, N=n, pruning=pruning,
-            epsilon=epsilon, pricingDate=pricing_date,
+            market, N=n, pruning=pruning, epsilon=epsilon, pricingDate=pricing_date,
         ).price(option, build_tree=True)
         for n in n_vals
     ]
