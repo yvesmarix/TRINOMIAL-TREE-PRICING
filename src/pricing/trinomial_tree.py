@@ -1,13 +1,16 @@
 import numpy as np
 import datetime as dt
 import matplotlib.pyplot as plt
+
 from typing import Literal, Optional, List, Tuple
 from matplotlib.collections import LineCollection
-
 from model import Model
+
 from node import Node
 from option import Option
 from market import Market
+
+import time
 from funcs import *
 
 
@@ -42,17 +45,23 @@ class TrinomialTree(Model):
         method: Literal["backward", "recursive"] = "backward",
         build_tree: bool = False,
         compute_greeks: bool = False,
+        activate_timer: bool = False
     ) -> float:
         """
         Calcule le prix d'une option via arbre trinomial (backward ou recursif).
         Si build_tree=True, reconstruit l’arbre complet avant le pricing.
         """
+        start = time.perf_counter()  # début du timer
         if build_tree or not hasattr(self, "root") or self.root is None:
             self.option = option
             self._compute_parameters(self.market.S0, dividend=False)
             self.root = self._build_tree(compute_greeks)
-        return self.root.price(option, method)
 
+        price = self.root.price(option, method)
+        elapsed = time.perf_counter() - start  # fin du timer
+        if activate_timer: print(f"[Timer] Pricing exécuté en {elapsed:.4f} secondes.")   
+        return price
+    
     # ------------------------------------------------------------------ #
     # Construction
     # ------------------------------------------------------------------ #
