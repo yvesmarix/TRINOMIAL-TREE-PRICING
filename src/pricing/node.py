@@ -1,4 +1,3 @@
-from math import trunc
 import numpy as np
 from typing import Optional, TYPE_CHECKING
 if TYPE_CHECKING:

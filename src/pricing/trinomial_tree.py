@@ -4,14 +4,15 @@ import matplotlib.pyplot as plt
 
 from typing import Literal, Optional, List, Tuple
 from matplotlib.collections import LineCollection
-from model import Model
+from pricing.model import Model
 
-from node import Node
-from option import Option
-from market import Market
+from pricing.node import Node
+from pricing.option import Option
+from pricing.market import Market
 
 import time
-from funcs import *
+from pricing.funcs import *
+from collections import deque
 
 
 class TrinomialTree(Model):
@@ -166,7 +167,7 @@ class TrinomialTree(Model):
         up.down, down.up = root, root
 
     # ------------------------------------------------------------------ #
-    # Parametres locaux
+    # Parametrage local
     # ------------------------------------------------------------------ #
     def _should_prune_node(self, node: Node) -> bool:
         """Retourne True si la proba du nœud < epsilon (pruning actif)."""
@@ -235,55 +236,84 @@ class TrinomialTree(Model):
             # on evite de faire un joli plot… du vide
             raise RuntimeError("arbre non construit. utilisez price(build_tree=True).")
 
-
     def _collect_nodes_and_edges(
         self, depth: int, proba_min: float
     ) -> Tuple[List[float], List[float], List[float], List[Tuple[tuple, tuple]], List[float]]:
         """Parcours bfs pour recuperer positions, tailles et arêtes du graphe."""
         from collections import deque
 
-        visited, seen = set(), set()      # pour eviter de repasser sur les mêmes nœuds/segments
+        visited, seen = set(), set()  # pour eviter de repasser sur les mêmes nœuds/segments
         q = deque([(n, 0) for n in iter_column(self.root)])  # colonne 0 : racine + eventuels freres
-        xs, ys, sizes, edges, all_S = [], [], [], [], []     # buffers de sortie
-
-        def x_of(_node, lvl): 
-            # on force x=0 sur la colonne 0 (racine et freres) pour un alignement propre
-            return 0.0 if lvl == 0 else float(lvl)
+        xs, ys, sizes, edges, all_S = [], [], [], [], []  # buffers de sortie
 
         while q:
             n, lvl = q.popleft()
-            if not n or lvl > depth or id(n) in visited:
-                # on saute si on a depasse la profondeur, ou dejà vu
+            if not self._should_process_node(n, lvl, depth, visited):
                 continue
             visited.add(id(n))
 
-            p = float(getattr(n, "proba", 0.0))
-            S = getattr(n, "S", None)
-            if S is None:
-                # pas de spot = pas d’affichage
-                continue
-            all_S.append(S)
+            self._process_node(n, lvl, proba_min, xs, ys, sizes, edges, seen, all_S)
 
-            if p >= proba_min:
-                # on garde le nœud s'il porte assez de masse
-                xs.append(x_of(n, lvl))
-                ys.append(S)
-                # taille proportionnelle à la proba (borne basse pour voir qqch)
-                sizes.append(max(min(p, 1.0), 1e-16) * 1500)
-
-                # on ajoute les segments vers les enfants (up/mid/down)
-                for ch in (n.next_up, n.next_mid, n.next_down):
-                    if ch and (id(n), id(ch)) not in seen:
-                        edges.append([(x_of(n, lvl), S), (x_of(ch, lvl + 1), ch.S)])
-                        seen.add((id(n), id(ch)))
-
-            # on pousse les enfants dans la queue bfs (même si proba trop faible pour le display)
-            for ch in (n.next_up, n.next_mid, n.next_down):
-                if ch:
-                    q.append((ch, lvl + 1))
+            # on pousse les enfants dans la queue bfs
+            self._enqueue_children(n, lvl, q)
 
         return xs, ys, sizes, edges, all_S
 
+    def _should_process_node(self, node: Node, level: int, depth: int, visited: set) -> bool:
+        """Determine si un nœud doit être traité."""
+        return node and level <= depth and id(node) not in visited
+
+    def _process_node(
+        self,
+        node: Node,
+        level: int,
+        proba_min: float,
+        xs: List[float],
+        ys: List[float],
+        sizes: List[float],
+        edges: List[Tuple[tuple, tuple]],
+        seen: set,
+        all_S: List[float],
+    ) -> None:
+        """Traite un nœud pour collecter ses données et ses arêtes."""
+        p = float(getattr(node, "proba", 0.0))
+        S = getattr(node, "S", None)
+        if S is None:
+            return
+        all_S.append(S)
+
+        if p >= proba_min:
+            xs.append(self._compute_x(node, level))
+            ys.append(S)
+            sizes.append(self._compute_size(p))
+            self._add_edges(node, level, edges, seen)
+
+    def _compute_x(self, node: Node, level: int) -> float:
+        """Calcule la position x d’un nœud."""
+        return 0.0 if level == 0 else float(level)
+
+    def _compute_size(self, proba: float) -> float:
+        """Calcule la taille d’un nœud en fonction de sa probabilité."""
+        return max(min(proba, 1.0), 1e-16) * 1500
+
+    def _add_edges(
+        self,
+        node: Node,
+        level: int,
+        edges: List[Tuple[tuple, tuple]],
+        seen: set,
+    ) -> None:
+        """Ajoute les arêtes entre un nœud et ses enfants."""
+        for child in (node.next_up, node.next_mid, node.next_down):
+            if child and (id(node), id(child)) not in seen:
+                edges.append([(self._compute_x(node, level), node.S), (self._compute_x(child, level + 1), child.S)])
+                seen.add((id(node), id(child)))
+
+    def _enqueue_children(self, node: Node, level: int, queue: deque) -> None:
+        """Ajoute les enfants d’un nœud à la file pour traitement."""
+        for child in (node.next_up, node.next_mid, node.next_down):
+            if child:
+                queue.append((child, level + 1))
 
     def _compute_ylim(
         self,

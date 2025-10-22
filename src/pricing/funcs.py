@@ -1,7 +1,7 @@
 import numpy as np
 from typing import Optional, TYPE_CHECKING
 if TYPE_CHECKING:
-    from trinomial_tree import TrinomialTree
+    from pricing.trinomial_tree import TrinomialTree
     
 def probas_valid(tree: Optional["TrinomialTree"]) -> bool:
     """Verifie que les probabilites sont valides et sommees a 1."""
