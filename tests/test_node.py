@@ -17,7 +17,7 @@ def test_node_initialization():
     assert n.option_value is None
 
 def test_node_is_leaf():
-    """Test pour vérifier si un nœud est une feuille."""
+    """Test pour verifier si un nœud est une feuille."""
     n = Node(S=100.0, proba=1.0)
     assert n._is_leaf() is True
 
@@ -45,7 +45,7 @@ def test_node_discount(r, delta_t, monkeypatch):
     [(0.3, 0.4, 0.3, [10.0, 5.0, 0.0]) for _ in range(5)]
 )
 def test_node_continuation_from_children(p_up, p_mid, p_down, option_values, monkeypatch):
-    """Test de l'espérance actualisée des valeurs des enfants."""
+    """Test de l'esperance actualisee des valeurs des enfants."""
     n = Node(S=100.0, proba=1.0)
     class MockTree:
         def __init__(self, p_up, p_mid, p_down):
@@ -71,7 +71,7 @@ def test_node_continuation_from_children(p_up, p_mid, p_down, option_values, mon
     ]
 )
 def test_node_apply_exercise_rule(S, K, continuation, option_class, expected):
-    """Test de la règle d'exercice pour les options européennes et américaines."""
+    """Test de la regle d'exercice pour les options europeennes et americaines."""
     n = Node(S=S, proba=1.0)
     class Option:
         def __init__(self, option_class, K):
@@ -87,7 +87,7 @@ def test_node_apply_exercise_rule(S, K, continuation, option_class, expected):
     [(0.3, 0.4, 0.3, [10.0, 5.0, 0.0]) for _ in range(5)]
 )
 def test_node_price_recursive(p_up, p_mid, p_down, option_values):
-    """Test du pricing récursif."""
+    """Test du pricing recursif."""
     n = Node(S=100.0, proba=1.0)
     n.next_up = Node(S=110.0, proba=p_up, option_value=option_values[0])
     n.next_mid = Node(S=100.0, proba=p_mid, option_value=option_values[1])
