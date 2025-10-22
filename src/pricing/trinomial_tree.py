@@ -325,17 +325,17 @@ class TrinomialTree(Model):
         """Definit les bornes y du trace automatiquement ou manuellement."""
         Svals = np.asarray(all_S)
         if 0.0 < clip < 0.5:
-            # on clippe les extrêmes (optionnel) pour eviter des axes trop etires
             lo, hi = np.quantile(Svals, clip), np.quantile(Svals, 1 - clip)
         else:
             lo, hi = Svals.min(), Svals.max()
 
-        # petite marge pour que les points ne touchent pas les bords
         span = max(1e-12, hi - lo)
         lo, hi = lo - 0.03 * span, hi + 0.03 * span
 
-        # si l’utilisateur force y_min/y_max, on respecte
-        return y_min or lo, y_max or hi
+        # Respecter 0.0 si demandé
+        ylo = lo if y_min is None else float(y_min)
+        yhi = hi if y_max is None else float(y_max)
+        return ylo, yhi
 
 
     def _draw_graph(

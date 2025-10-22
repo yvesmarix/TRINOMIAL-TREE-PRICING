@@ -21,6 +21,10 @@ dev = [
     "black>=23.0",
     "mypy>=1.0",
     "types-setuptools",
+    "streamlit",
+    "pandas",
+    "matplotlib",
+    "scipy"
 ]
 
 [project.urls]
