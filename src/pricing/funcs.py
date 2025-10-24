@@ -8,7 +8,7 @@ def probas_valid(tree: Optional["TrinomialTree"]) -> bool:
     p_down, p_up, p_mid = tree.p_down, tree.p_up, tree.p_mid
     return (
         0 <= p_down <= 1 and 0 <= p_mid <= 1 and 0 <= p_up <= 1
-        and abs(p_down + p_mid + p_up - 1.0) <= 1e-12
+        and abs(p_down + p_mid + p_up - 1.0) <= 1e-10
     )
 
 def compute_forward(S: float, r: float, dt: float) -> float:

@@ -4,7 +4,7 @@ import datetime
 class Model:
 
     def __init__(self, pricingDate: datetime.datetime):
-        self.pricing_date: datetime.datetime = pricingDate
+        self.pricing_date: datetime.date = pricingDate
 
     @staticmethod
     def check_probability(probability: float, comment: str = ""):

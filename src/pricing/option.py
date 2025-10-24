@@ -4,7 +4,7 @@ import datetime as dt
 class Option:
     """Représente une option (Call/Put, Européenne/Américaine)."""
 
-    def __init__(self, K: float, maturity: dt.datetime, option_type: str, option_class: str) -> None:
+    def __init__(self, K: float, maturity: dt.date, option_type: str, option_class: str) -> None:
         """Initialise l’option avec strike, maturité, type et classe."""
         self.K = float(K)
         self.maturity = maturity

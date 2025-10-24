@@ -8,7 +8,7 @@ def _setup_bs(market, option):
     """
     Prépare la date de pricing, l'échéance T (en années) et le pricer Black–Scholes.
     """
-    pricing_date = dt.datetime.today()
+    pricing_date = dt.date.today()
     T = (option.maturity - pricing_date).days / 365
     bs = BlackScholesPricer(
         S=market.S0, K=option.K, T=T, r=market.r, sigma=market.sigma,

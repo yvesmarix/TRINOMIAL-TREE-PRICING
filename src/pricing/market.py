@@ -10,7 +10,7 @@ class Market:
         r: float,
         sigma: float,
         dividend: float | None = None,
-        dividend_date: dt.datetime | None = None,
+        dividend_date: dt.date | None = None,
     ) -> None:
         """Initialise le marché avec les paramètres principaux."""
         self.S0 = float(S0)

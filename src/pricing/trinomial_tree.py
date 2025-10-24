@@ -27,7 +27,7 @@ class TrinomialTree(Model):
         N: int,
         pruning: bool = False,
         epsilon: Optional[float] = None,
-        pricingDate: Optional[dt.datetime] = None,
+        pricingDate: Optional[dt.date] = None,
     ) -> None:
         """Initialise le modele avec parametres de marche et profondeur N."""
         self.market = market
@@ -35,7 +35,7 @@ class TrinomialTree(Model):
         # decision de pruner (utile pour du debug)
         self.pruning = pruning
         self.epsilon = epsilon if epsilon is not None else 1e-7
-        super().__init__(pricingDate or dt.datetime.today())
+        super().__init__(pricingDate or dt.date.today())
 
     # ------------------------------------------------------------------ #
     # Pricing
@@ -200,8 +200,7 @@ class TrinomialTree(Model):
         if not getattr(self.market, "dividend_date", None) or not self.market.dividend:
             return None
         years = (self.market.dividend_date - self.pricing_date).days / 365
-        step = int(np.floor(years / self.delta_t + 1e-12))
-        return max(1, min(step, self.N))
+        return np.round(years / self.delta_t)
 
     # ------------------------------------------------------------------ #
     # Visualisation

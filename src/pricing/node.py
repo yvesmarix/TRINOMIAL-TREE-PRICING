@@ -1,5 +1,5 @@
 import numpy as np
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING, Self
 if TYPE_CHECKING:
     from trinomial_tree import TrinomialTree
 
@@ -157,9 +157,16 @@ class Node:
         target = cand or Node(S=E, proba=0.0)
         target.tree = tree # le noeud connait son arbre
 
-        if not cand: self._attach_trunc_links(target) # rattachement au trunc
+        if not cand: 
+            self._attach_trunc_links(target) # rattachement au trunc
+            if self.up is None and self.down is not None:
+                target.down = self.next_mid
+                self.down.next_mid.up = target
+            elif self.down is None and self.up is not None:
+                target.up = self.next_mid
+                self.up.next_mid.down = target
         target.proba += self.proba # cumule des probas
-        self.next_up = self.next_mid = self.next_down = target
+        self.next_mid = target
 
     # ------------------------------------------------------------------ #
     # Outils internes
@@ -180,6 +187,12 @@ class Node:
         if not self.next_down: self._create_neighbor(tree, "down")
         if not self.next_up:   self._create_neighbor(tree, "up")
 
+    def _is_monomial(self) -> bool:
+        """
+        Detecte si un noeud est monomial ou non.
+        """
+        return self.next_mid == self.next_down == self.next_up
+
     # ------------------------------------------------------------------ #
     # Fonctions de base du pricing
     # ------------------------------------------------------------------ #
@@ -196,9 +209,9 @@ class Node:
         # on recupere les proba locales
         pu, pm, pd = self.tree.p_up, self.tree.p_mid, self.tree.p_down
         # somme p*V enfant (0 si enfant absent)
-        vu = pu * (self.next_up.option_value if self.next_up else 0.0)
-        vm = pm * (self.next_mid.option_value if self.next_mid else 0.0)
-        vd = pd * (self.next_down.option_value if self.next_down else 0.0)
+        vu = pu * (self.next_up.option_value if self.next_up is not None and self.next_up.option_value is not None else 0.0)
+        vm = pm * (self.next_mid.option_value if self.next_mid is not None and self.next_mid.option_value is not None else 0.0)
+        vd = pd * (self.next_down.option_value if self.next_down is not None and self.next_down.option_value is not None else 0.0)
         # on actualise la somme
         return self._discount() * (vu + vm + vd)
 

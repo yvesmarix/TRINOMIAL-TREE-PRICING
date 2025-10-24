@@ -40,17 +40,17 @@ class BlackScholesPricer:
         sigma: float,
         option_type: Literal["call", "put"],
         dividend: float = 0.0,
-        dividend_date: Optional[dt.datetime] = None,
+        dividend_date: Optional[dt.date] = None,
     ) -> None:
         """Initialise le modèle Black–Scholes."""
-        self.S: float = float(S)
-        self.K: float = float(K)
-        self.T: float = float(T)
-        self.r: float = float(r)
-        self.sigma: float = float(sigma)
+        self.S: float = S
+        self.K: float = K
+        self.T: float = T
+        self.r: float = r
+        self.sigma: float = sigma
         self.option_type: Literal["call", "put"] = option_type.lower()  # type: ignore
         self.dividend: float = float(dividend)
-        self.dividend_date: Optional[dt.datetime] = dividend_date
+        self.dividend_date: Optional[dt.date] = dividend_date
         self._N, self._n = norm.cdf, norm.pdf
 
     # ------------------- utilitaires -------------------
@@ -60,7 +60,7 @@ class BlackScholesPricer:
         """
         S = self.S
         if self.dividend and self.dividend_date:
-            tD = max((self.dividend_date - dt.datetime.today()).days / 365.0, 0.0)
+            tD = max((self.dividend_date - dt.date.today()).days / 365.0, 0.0)
             S -= self.dividend * np.exp(-self.r * tD)
         return S
 
@@ -68,8 +68,8 @@ class BlackScholesPricer:
         """
         Renvoie les paramètres d1 et d2 du modèle Black–Scholes.
         """
-        T = max(self.T, 1e-10)
-        sig = max(self.sigma, 1e-12)
+        T = self.T
+        sig = self.sigma
         rt = sig * np.sqrt(T)
         d1 = (np.log(S_adj / self.K) + (self.r + 0.5 * sig**2) * T) / rt
         d2 = d1 - rt
