@@ -87,7 +87,7 @@ class TrinomialTree(Model):
                 else:
                     node.create_children(self, i, dividend) # creation du triplet
             if dividend: # on revient aux anciennes probas
-                self._compute_parameters(t.S)
+                self._compute_parameters(t.S, validate=True)
             t = t.next_mid
         return root
 
@@ -176,7 +176,6 @@ class TrinomialTree(Model):
     def _compute_parameters(
         self,
         S: float,
-        S1_mid: Optional[float] = None,
         dividend: bool = False,
         validate: bool = True,
     ) -> None:
@@ -184,12 +183,12 @@ class TrinomialTree(Model):
         self.delta_t = (self.option.maturity - self.pricing_date).days / self.N / 365
         self.alpha = np.exp(self.market.sigma * np.sqrt(3 * self.delta_t))
         # inputes probas
-        fwd = compute_forward(S, self.market.r, self.delta_t)
-        E = fwd - self.market.dividend if dividend else fwd
         var = compute_variance(S, self.market.r, self.delta_t, self.market.sigma)
-        # calcule des probas
+        fwd = compute_forward(S, self.market.r, self.delta_t)
+        E = fwd - dividend
+
         self.p_down, self.p_up, self.p_mid = compute_probabilities(
-            E, S1_mid if dividend else fwd, var, self.alpha, dividend
+            E, fwd, var, self.alpha, dividend=True
         )
         # check bornes
         if validate:

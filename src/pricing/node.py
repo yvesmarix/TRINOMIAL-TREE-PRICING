@@ -100,16 +100,33 @@ class Node:
 
         # si dividende : decale vers le bas tant que plus proche de l'esperance
         if dividend:
-            while True:
-                dn = self.next_mid.down or Node(S=self.next_mid.S / tree.alpha, proba=0.0, tree=tree)
-                if self.next_mid.down is None:
-                    dn.trunc, dn.prev_trunc, dn.up, self.next_mid.down = self.next_mid.trunc, self.trunc, self.next_mid, dn
-                if abs(dn.S - esp) < abs(self.next_mid.S - esp): self.next_mid = dn
-                else: break
+            self._shift_mid_toward_expectation(esp, tree)
             # recalcule des paramètres
-            tree._compute_parameters(self.S, self.next_mid.S, dividend=True, validate=True)
+            tree._compute_parameters(self.S, dividend=True, validate=True)
             self.next_mid.proba += p_mid # cumule des probas
             self._ensure_neighbor(tree)  # voisins up/down au pas dividende
+
+    def _shift_mid_toward_expectation(self, esp: float, tree: Optional["TrinomialTree"]) -> None:
+        """Decale next_mid vers le noeud le plus proche de l'espérance."""
+        while True:
+            # candidats up / down (créés si absents) autour du mid courant
+            up = self.next_mid.up or Node(S=self.next_mid.S * tree.alpha, proba=0.0, tree=tree)
+            if self.next_mid.up is None:
+                up.trunc, up.prev_trunc, up.down, self.next_mid.up = self.next_mid.trunc, self.trunc, self.next_mid, up
+
+            dn = self.next_mid.down or Node(S=self.next_mid.S / tree.alpha, proba=0.0, tree=tree)
+            if self.next_mid.down is None:
+                dn.trunc, dn.prev_trunc, dn.up, self.next_mid.down = self.next_mid.trunc, self.trunc, self.next_mid, dn
+
+            # check des erreurs
+            cur_err = abs(self.next_mid.S - esp); up_err = abs(up.S - esp); dn_err = abs(dn.S - esp)
+
+            # se déplacer vers le plus proche ; s'arrêter si rien n'améliore
+            if up_err < cur_err and up_err <= dn_err:
+                self.next_mid = up; continue
+            if dn_err < cur_err and dn_err < up_err:
+                self.next_mid = dn; continue
+            break
 
     def _create_neighbor(self, tree: Optional["TrinomialTree"], kind: str):
         """
