@@ -15,6 +15,7 @@ import pandas as pd
 import streamlit as st
 
 # --- Imports directs depuis le package `pricing` ---
+# On ajoute le dossier src/ au path pour importer nos modules
 REPO_SRC = os.path.join(os.path.dirname(__file__), "src")
 if os.path.isdir(REPO_SRC) and REPO_SRC not in sys.path:
     sys.path.insert(0, REPO_SRC)
@@ -25,16 +26,17 @@ from pricing.trinomial_tree import TrinomialTree
 from pricing.blackscholes import BlackScholesPricer
 from pricing import convergence
 
-DAY_COUNT: float = 365.0  # ACT/365F
+DAY_COUNT: float = 365.0  # ACT/365F : compte de jours classique
 
 
 def yearfrac(start: dt.date, end: dt.date, basis: float = DAY_COUNT) -> float:
-    """Fraction d'année ACT/365F (>=0)."""
+    """Calcule la fraction d'année entre deux dates (jamais négatif)."""
     return max(0.0, (end - start).days / basis)
 
 
 @dataclass
 class AppInputs:
+    """Regroupe tous les paramètres de l'interface en un seul objet."""
     pricing_date: dt.date
     maturity: dt.date
     S0: float
@@ -56,7 +58,7 @@ class AppInputs:
 
 
 # ---------------------------------------------------------------------
-# Pricing helpers
+# Pricing helpers – les petites fonctions utiles
 # ---------------------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def bs_price_cached(
@@ -69,7 +71,7 @@ def bs_price_cached(
     dividend: float = 0.0,
     dividend_date: Optional[dt.date] = None,
 ) -> float:
-    """Calcule le prix Black-Scholes avec cache."""
+    """Calcule le prix BS avec cache Streamlit pour éviter les recalculs."""
     bs = BlackScholesPricer(
         S,
         K,
@@ -84,7 +86,7 @@ def bs_price_cached(
 
 
 def build_market_option(inputs: AppInputs) -> Tuple[Market, Option, float]:
-    """Construit Market, Option et T à partir des inputs."""
+    """Construit les objets Market, Option et calcule T (années)."""
     market = Market(
         inputs.S0,
         inputs.r,
@@ -110,7 +112,7 @@ def tree_price(
     pricing_date: dt.date,
     option: Option,
 ) -> Tuple[float, float]:
-    """Calcule le prix via l'arbre trinomial et mesure le temps."""
+    """Calcule le prix via arbre trinomial et chronomètre le temps."""
     t0: float = time.perf_counter()
     tree = TrinomialTree(
         market,
@@ -129,6 +131,7 @@ def _build_tree_for_greeks(
     option: Option,
     inputs: AppInputs,
 ) -> TrinomialTree:
+    """Construit l'arbre en mode 'compute_greeks' pour récupérer les sensibilités."""
     tree = TrinomialTree(
         market,
         N=inputs.N,
@@ -146,6 +149,7 @@ def _greeks_from_tree(
     option: Option,
     inputs: AppInputs,
 ) -> Dict[str, float]:
+    """Extrait Delta, Gamma, Vega, Rho, et Theta de l'arbre."""
     delta: float = float(tree.delta())
     gamma: float = float(tree.gamma())
     vega: float = float(tree.vega(option))
@@ -165,7 +169,7 @@ def compute_tree_and_greeks(
     option: Option,
     inputs: AppInputs,
 ) -> Tuple[TrinomialTree, Dict[str, float]]:
-    """Construit l'arbre et renvoie aussi les grecs."""
+    """Construit l'arbre et renvoie aussi les grecs calculés."""
     tree_greeks = _build_tree_for_greeks(market, option, inputs)
     greeks = _greeks_from_tree(tree_greeks, market, option, inputs)
     return tree_greeks, greeks
@@ -177,7 +181,7 @@ def compute_theta(
     option: Option,
     inputs: AppInputs,
 ) -> float:
-    """Theta (par jour) via différence finie sur +1 jour."""
+    """Theta (par jour) via différence finie : on avance d'un jour."""
     tree_next = TrinomialTree(
         market,
         N=inputs.N,
@@ -191,6 +195,7 @@ def compute_theta(
 
 
 def _strike_grid(inputs: AppInputs) -> np.ndarray:
+    """Génère une grille de strikes autour de K selon le span %."""
     span: float = inputs.curve_span_pct / 100.0
     return np.linspace(
         inputs.K * (1.0 - span),
@@ -229,7 +234,7 @@ def price_vs_strike(inputs: AppInputs) -> pd.DataFrame:
 
 
 def compute_bs_price(inputs: AppInputs, strike: float, T: float) -> float:
-    """Calcule le prix Black-Scholes pour un strike donné."""
+    """Calcule le prix BS pour un strike donné (avec cache)."""
     return bs_price_cached(
         inputs.S0,
         strike,
@@ -243,27 +248,32 @@ def compute_bs_price(inputs: AppInputs, strike: float, T: float) -> float:
 
 
 # ---------------------------------------------------------------------
-# UI
+# UI – interface Streamlit
 # ---------------------------------------------------------------------
 st.set_page_config(page_title="Trinomial Tree Pricer", layout="wide")
 st.title("📈 Trinomial Tree & Black–Scholes Pricer")
-st.caption("Paramétrez l’arbre, comparez à Black–Scholes, et explorez graphiques/convergences.")
+st.caption("Paramétrez l'arbre, comparez à Black–Scholes, et explorez graphiques/convergences.")
 
+# Sidebar = barre latérale avec tous les paramètres
 with st.sidebar:
     st.header("Paramètres")
 
+    # Dates
     today: dt.date = dt.date.today()
     pricing_date: dt.date = st.date_input("Pricing date", value=today)
     maturity: dt.date = st.date_input("Maturity", value=today + dt.timedelta(days=180))
 
+    # Paramètres de marché
     S0: float = st.number_input("Spot S0", min_value=0.0, value=100.0)
     K: float = st.number_input("Strike K", min_value=0.0, value=100.0)
     r: float = st.number_input("Rate r", value=0.02, step=0.002, format="%0.6f")
     sigma: float = st.number_input("Volatility σ", min_value=0.0001, value=0.20, step=0.01, format="%0.6f")
 
+    # Type d'option
     option_type: str = st.selectbox("Option type", ["call", "put"], index=0)
     option_class: str = st.selectbox("Style", ["european", "american"], index=0)
 
+    # Dividende optionnel
     has_div: bool = st.toggle("Dividende discret ?", value=False)
     dividend: float = 0.0
     dividend_date: Optional[dt.date] = None
@@ -272,8 +282,9 @@ with st.sidebar:
         div_date: dt.date = st.date_input("Date dividende", value=today + dt.timedelta(days=90))
         dividend_date = div_date
 
+    # Paramètres de l'arbre trinomial
     st.subheader("Arbre trinomial")
-    N: int = st.number_input("Nombre d’étapes N", min_value=1, max_value=2000, value=100, step=10)
+    N: int = st.number_input("Nombre d'étapes N", min_value=1, max_value=2000, value=100, step=10)
     pruning: bool = st.toggle("Pruning", value=True)
     epsilon: float = st.number_input(
         "Epsilon (tolérance)",
@@ -283,6 +294,7 @@ with st.sidebar:
         format="%0.1e",
     )
 
+    # Paramètres convergence & courbes
     st.subheader("Convergence & Courbe")
     conv_min: int = st.number_input("Convergence: N min", min_value=1, max_value=5000, value=50, step=5)
     conv_max: int = st.number_input("Convergence: N max", min_value=1, max_value=5000, value=400, step=10)
@@ -291,16 +303,19 @@ with st.sidebar:
     curve_pts: int = st.slider("Points pour courbe Strike", min_value=5, max_value=101, value=41, step=2)
     curve_span_pct: float = st.slider("Écart autour de K (%)", min_value=5, max_value=100, value=30, step=5)
 
-    st.subheader("Affichage de l’arbre")
+    # Paramètres d'affichage de l'arbre
+    st.subheader("Affichage de l'arbre")
     max_depth: int = st.number_input("Profondeur max (None=tout)", min_value=1, max_value=5000, value=min(50, N), step=1)
     proba_min: float = st.number_input("Proba min pour afficher un nœud", min_value=0.0, value=1e-6, format="%0.1e")
     percentile_clip: int = st.slider("Clip vertical (percentile)", min_value=0, max_value=20, value=0, step=1)
     edge_alpha: float = st.slider("Transparence des arêtes", min_value=0.0, max_value=1.0, value=0.35, step=0.05)
     linewidth: float = st.slider("Épaisseur des arêtes", min_value=0.1, max_value=2.0, value=0.4, step=0.1)
 
+    # Boutons d'action
     run: bool = st.button("▶️ Calculer / Mettre à jour", type="primary")
-    plot_btn: bool = st.button("🌳 Tracer l’arbre")
+    plot_btn: bool = st.button("🌳 Tracer l'arbre")
 
+# On regroupe tous les inputs dans un objet pour simplifier
 inputs = AppInputs(
     pricing_date=pricing_date,
     maturity=maturity,
@@ -322,10 +337,13 @@ inputs = AppInputs(
     curve_span_pct=float(curve_span_pct),
 )
 
+# Disposition en 3 colonnes pour les résultats principaux
 colA, colB, colC = st.columns([1, 1, 1])
 
+# Construction du marché et de l'option
 market, option, T = build_market_option(inputs)
 
+# Colonne A : Prix arbre
 with colA:
     st.subheader("Prix – Arbre trinomial")
     tree_price_val, t_sec = tree_price(
@@ -338,6 +356,7 @@ with colA:
     )
     st.metric("Tree price", f"{tree_price_val:,.6f}", help=f"Temps de calcul: {t_sec:.3f} s, N={inputs.N}")
 
+# Colonne B : Prix BS (si européen)
 with colB:
     st.subheader("Prix – Black–Scholes (européen)")
     if inputs.option_class.lower() == "european":
@@ -354,13 +373,15 @@ with colB:
         st.metric("BS price", f"{bs_val:,.6f}")
         st.caption("Comparaison valide pour options européennes.")
     else:
-        st.caption("Black–Scholes n’est affiché que pour les options **européennes**.")
+        st.caption("Black–Scholes n'est affiché que pour les options **européennes**.")
         bs_val = float("nan")
 
+# Colonne C : Greeks
 with colC:
     st.subheader("Greeks – Arbre & BS")
     tree_greeks, g_tree = compute_tree_and_greeks(market, option, inputs)
 
+    # Grecs BS si option européenne
     if inputs.option_class.lower() == "european":
         bs = BlackScholesPricer(
             inputs.S0,
@@ -381,6 +402,7 @@ with colC:
     else:
         bs_delta = bs_gamma = bs_theta = bs_vega = bs_rho = np.nan
 
+    # Tableau comparatif
     greek_df = pd.DataFrame(
         {
             "Tree": [
@@ -402,10 +424,11 @@ with colC:
     )
     st.dataframe(greek_df.style.format("{:.6f}"))
 
-# -------- Visualisation de l’arbre --------
+# -------- Visualisation de l'arbre --------
 st.markdown("---")
-st.subheader("Visualisation de l’arbre")
+st.subheader("Visualisation de l'arbre")
 
+# Construit l'arbre et l'affiche
 tree = TrinomialTree(
     market,
     N=inputs.N,
@@ -424,10 +447,11 @@ tree.plot_tree(
 fig = plt.gcf()
 st.pyplot(fig, clear_figure=True)
 
-# --- Convergence (prix vs. nombre d’étapes) ---
+# --- Convergence (prix vs. nombre d'étapes) ---
 st.markdown("---")
-st.subheader("Convergence (prix vs. nombre d’étapes)")
+st.subheader("Convergence (prix vs. nombre d'étapes)")
 
+# Capture les figures matplotlib générées
 prev_ids = set(plt.get_fignums())
 convergence.bs_convergence_by_step(
     market,
@@ -443,8 +467,9 @@ for fid in new_ids:
 
 # --- Benchmark temps d'exécution ---
 st.markdown("---")
-st.subheader("Benchmark temps d’exécution (price() vs N)")
+st.subheader("Benchmark temps d'exécution (price() vs N)")
 
+# Crée une échelle log de N pour le benchmark
 N_vals_runtime = np.logspace(
     np.log10(max(5, inputs.conv_min)),
     np.log10(max(inputs.conv_max, inputs.conv_min + 1)),
@@ -469,6 +494,7 @@ for fid in new_ids:
 st.markdown("---")
 st.subheader("Courbe de prix en fonction du strike — BS vs Arbre")
 
+# Génère une grille de strikes autour de K
 span = inputs.curve_span_pct / 100.0
 strikes = np.linspace(
     inputs.K * (1.0 - span),
@@ -489,12 +515,13 @@ new_ids = [fid for fid in plt.get_fignums() if fid not in prev_ids]
 for fid in new_ids:
     st.pyplot(plt.figure(fid), clear_figure=False)
 
+# Notes finales pour l'utilisateur
 st.markdown(
     """
     **Notes**
     - La maturité est transformée en *T* (années) avec une base ACT/365.
     - Le pricer Black–Scholes est affiché uniquement pour les options **européennes**.
-    - Le dividende discret est passé aux deux pricers s’il est renseigné.
+    - Le dividende discret est passé aux deux pricers s'il est renseigné.
     - Grecs BS analytiques; côté arbre : Δ/Γ via nœuds racine, vega/rho en FD.
     """
 )
