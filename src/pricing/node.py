@@ -122,7 +122,8 @@ class Node:
         # parametres locaux
         alpha_loc = np.exp(tree.market.sigma * np.sqrt(3 * tree.delta_t))  # alpha local
         fwd_from_snapped = self.next_mid.S * np.exp(tree.market.r * tree.delta_t)
-        var_from_snapped = self.next_mid.S**2 * np.exp(2 * tree.market.r * tree.delta_t) * (np.exp(tree.market.sigma**2 * tree.delta_t) - 1)
+        var_from_snapped = (self.next_mid.S**2 * np.exp(2 * tree.market.r * tree.delta_t) 
+                            * (np.exp(tree.market.sigma**2 * tree.delta_t) - 1))
 
         # proba LOCALES pour conserver l'espérance du parent
         p_d, p_u, p_m_loc = compute_probabilities(
