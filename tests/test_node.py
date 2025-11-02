@@ -1,112 +1,173 @@
-import pytest
+from __future__ import annotations
+
+import math
 import random
-from pricing.node import Node
+import types
+from typing import List, Tuple, Callable
 
 import numpy as np
+import pytest
 
-def test_node_initialization():
-    """Test de l'initialisation d'un nœud."""
-    n = Node(S=100.0, proba=0.5)
+from pricing.node import Node
+
+
+# ---------------------------------------------------------------------------
+# Helpers typés
+# ---------------------------------------------------------------------------
+def _mock_tree_discount(r: float, delta_t: float) -> object:
+    market = types.SimpleNamespace(r=r)
+    return types.SimpleNamespace(market=market, delta_t=delta_t)
+
+
+def _mock_tree_probabilities(
+    p_up: float,
+    p_mid: float,
+    p_down: float,
+) -> object:
+    return types.SimpleNamespace(
+        p_up=p_up,
+        p_mid=p_mid,
+        p_down=p_down,
+    )
+
+
+def _make_euro_option(strike: float = 100.0) -> object:
+    class Option:
+        option_class: str = "european"
+
+        def __init__(self, K: float) -> None:
+            self.K = K
+
+        def payoff(self, S: float) -> float:
+            return max(S - self.K, 0.0)
+
+    return Option(strike)
+
+
+def _make_american_option(strike: float = 100.0) -> object:
+    class Option:
+        option_class: str = "american"
+
+        def __init__(self, K: float) -> None:
+            self.K = K
+
+        def payoff(self, S: float) -> float:
+            return max(S - self.K, 0.0)
+
+    return Option(strike)
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+def test_node_initialization() -> None:
+    n: Node = Node(S=100.0, proba=0.5)
     assert n.S == 100.0
     assert n.proba == 0.5
-    assert n.up is None
-    assert n.down is None
-    assert n.next_up is None
-    assert n.next_mid is None
-    assert n.next_down is None
+    assert n.up is None and n.down is None
+    assert n.next_up is None and n.next_mid is None and n.next_down is None
     assert n.option_value is None
 
-def test_node_is_leaf():
-    """Test pour verifier si un nœud est une feuille."""
-    n = Node(S=100.0, proba=1.0)
-    assert n._is_leaf() is True
 
+def test_node_is_leaf() -> None:
+    n: Node = Node(S=100.0, proba=1.0)
+    assert n._is_leaf() is True
     n.next_up = Node(S=110.0, proba=0.3)
     assert n._is_leaf() is False
 
-@pytest.mark.parametrize(
-    "r, delta_t",
-    [(random.uniform(0.01, 0.1), random.uniform(1 / 365, 1 / 12)) for _ in range(5)]
-)
-def test_node_discount(r, delta_t, monkeypatch):
-    """Test du facteur d'actualisation."""
-    n = Node(S=100.0, proba=1.0)
-    class MockTree:
-        def __init__(self, r, delta_t):
-            self.market = type("Market", (), {"r": r})
-            self.delta_t = delta_t
-    n.tree = MockTree(r, delta_t)
 
-    discount = n._discount()
+@pytest.mark.parametrize(
+    "r,delta_t",
+    [
+        (
+            random.uniform(0.01, 0.1),
+            random.uniform(1 / 365, 1 / 12),
+        )
+        for _ in range(5)
+    ],
+)
+def test_node_discount(r: float, delta_t: float) -> None:
+    n: Node = Node(S=100.0, proba=1.0)
+    n.tree = _mock_tree_discount(r, delta_t)  # type: ignore[assignment]
+    discount: float = n._discount()
     assert discount == pytest.approx(np.exp(-r * delta_t))
 
+
 @pytest.mark.parametrize(
-    "p_up, p_mid, p_down, option_values",
-    [(0.3, 0.4, 0.3, [10.0, 5.0, 0.0]) for _ in range(5)]
+    "p_up,p_mid,p_down,option_values",
+    [(0.3, 0.4, 0.3, [10.0, 5.0, 0.0]) for _ in range(5)],
 )
-def test_node_continuation_from_children(p_up, p_mid, p_down, option_values, monkeypatch):
-    """Test de l'esperance actualisee des valeurs des enfants."""
-    n = Node(S=100.0, proba=1.0)
-    class MockTree:
-        def __init__(self, p_up, p_mid, p_down):
-            self.p_up = p_up
-            self.p_mid = p_mid
-            self.p_down = p_down
-    n.tree = MockTree(p_up, p_mid, p_down)
+def test_node_continuation_from_children(
+    p_up: float,
+    p_mid: float,
+    p_down: float,
+    option_values: List[float],
+) -> None:
+    n: Node = Node(S=100.0, proba=1.0)
+    n.tree = _mock_tree_probabilities(p_up, p_mid, p_down)  # type: ignore[assignment]
 
     n.next_up = Node(S=110.0, proba=0.0, option_value=option_values[0])
     n.next_mid = Node(S=100.0, proba=0.0, option_value=option_values[1])
     n.next_down = Node(S=90.0, proba=0.0, option_value=option_values[2])
 
-    monkeypatch.setattr(n, "_discount", lambda: 1.0)
-    continuation = n._continuation_from_children()
-    assert continuation == pytest.approx(p_up * option_values[0] + p_mid * option_values[1] + p_down * option_values[2])
+    n._discount = lambda: 1.0  # type: ignore[assignment]
+    cont: float = n._continuation_from_children()
+    expected: float = (
+        p_up * option_values[0]
+        + p_mid * option_values[1]
+        + p_down * option_values[2]
+    )
+    assert cont == pytest.approx(expected)
+
 
 @pytest.mark.parametrize(
-    "S, K, continuation, option_class, expected",
+    "S,K,continuation,option_class,expected",
     [
         (100.0, 100.0, 2.0, "american", 2.0),
         (110.0, 100.0, 2.0, "american", 10.0),
         (100.0, 100.0, 2.0, "european", 2.0),
-    ]
+    ],
 )
-def test_node_apply_exercise_rule(S, K, continuation, option_class, expected):
-    """Test de la regle d'exercice pour les options europeennes et americaines."""
-    n = Node(S=S, proba=1.0)
-    class Option:
-        def __init__(self, option_class, K):
-            self.option_class = option_class
-            self.K = K
-        def payoff(self, S): return max(S - self.K, 0.0)
+def test_node_apply_exercise_rule(
+    S: float,
+    K: float,
+    continuation: float,
+    option_class: str,
+    expected: float,
+) -> None:
+    n: Node = Node(S=S, proba=1.0)
+    option = (
+        _make_american_option(K) if option_class == "american" else _make_euro_option(K)
+    )
+    res: float = n._apply_exercise_rule(option, continuation)
+    assert res == pytest.approx(expected)
 
-    option = Option(option_class, K)
-    assert n._apply_exercise_rule(option, continuation) == pytest.approx(expected)
 
 @pytest.mark.parametrize(
-    "p_up, p_mid, p_down, option_values",
-    [(0.3, 0.4, 0.3, [10.0, 5.0, 0.0]) for _ in range(5)]
+    "p_up,p_mid,p_down,option_values",
+    [(0.3, 0.4, 0.3, [10.0, 5.0, 0.0]) for _ in range(5)],
 )
-def test_node_price_recursive(p_up, p_mid, p_down, option_values):
-    """Test du pricing recursif."""
-    n = Node(S=100.0, proba=1.0)
+def test_node_price_recursive(
+    p_up: float,
+    p_mid: float,
+    p_down: float,
+    option_values: List[float],
+) -> None:
+    n: Node = Node(S=100.0, proba=1.0)
     n.next_up = Node(S=110.0, proba=p_up, option_value=option_values[0])
     n.next_mid = Node(S=100.0, proba=p_mid, option_value=option_values[1])
     n.next_down = Node(S=90.0, proba=p_down, option_value=option_values[2])
 
-    class Option:
-        option_class = "european"
-        def payoff(self, S): return max(S - 100, 0.0)
-
     class MockTree:
-        def __init__(self, p_up, p_mid, p_down):
+        def __init__(self) -> None:
             self.p_up = p_up
             self.p_mid = p_mid
             self.p_down = p_down
-            self.market = type("Market", (), {"r": 0.05})
+            self.market = types.SimpleNamespace(r=0.05)
             self.delta_t = 1 / 365
 
-    n.tree = MockTree(p_up, p_mid, p_down)
-
+    n.tree = MockTree()  # type: ignore[assignment]
+    option = _make_euro_option(100.0)
     n.option_value = None
-    price = n.price_recursive(Option())
-    assert price > 0
+    price: float = n.price_recursive(option)
+    assert price > 0.0
