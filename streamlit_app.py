@@ -38,15 +38,15 @@ from pricing import convergence
 DAY_COUNT = 365.0  # ACT/365F
 
 # Petite fonction utilitaire pour calculer la fraction d'annee
-def yearfrac(start: dt.datetime, end: dt.datetime, basis: float = DAY_COUNT) -> float:
+def yearfrac(start: dt.date, end: dt.date, basis: float = DAY_COUNT) -> float:
     """Fraction d'annee ACT/365F (>=0)."""
     return max(0.0, (end - start).days / basis)
 
 # ------------------------------ Dataclass pour les inputs ------------------------------
 @dataclass
 class AppInputs:
-    pricing_date: dt.datetime
-    maturity: dt.datetime
+    pricing_date: dt.date
+    maturity: dt.date
     S0: float
     K: float
     r: float
@@ -54,7 +54,7 @@ class AppInputs:
     option_type: str  # 'call' | 'put'
     option_class: str  # 'european' | 'american'
     dividend: float
-    dividend_date: Optional[dt.datetime]
+    dividend_date: Optional[dt.date]
     N: int
     pruning: bool
     epsilon: float
@@ -70,7 +70,7 @@ class AppInputs:
 # Cache pour le prix Black-Scholes (evite de recalculer inutilement)
 @st.cache_data(show_spinner=False)
 def bs_price_cached(S: float, K: float, T: float, r: float, sigma: float, opt_type: str,
-                    dividend: float = 0.0, dividend_date: Optional[dt.datetime] = None) -> float:
+                    dividend: float = 0.0, dividend_date: Optional[dt.date] = None) -> float:
     """Calcule le prix Black-Scholes avec cache."""
     bs = BlackScholesPricer(S, K, T, r, sigma, opt_type, dividend=dividend, dividend_date=dividend_date)
     return float(bs.price())
@@ -84,11 +84,11 @@ def build_market_option(inputs: AppInputs) -> tuple[Market, Option, float]:
     return market, option, T
 
 # Fonction pour calculer le prix via l'arbre trinomial
-def tree_price(market: Market, N: int, pruning: bool, epsilon: float, pricing_date: dt.datetime,
+def tree_price(market: Market, N: int, pruning: bool, epsilon: float, pricing_date: dt.date,
                option: Option) -> Tuple[float, float]:
     """Calcule le prix via l'arbre trinomial et mesure le temps de calcul."""
     t0 = time.perf_counter()
-    tree = TrinomialTree(market, N=N, pruning=pruning, epsilon=epsilon, pricingDate=pricing_date)
+    tree = TrinomialTree(market, N=N, pruning=pruning, epsilon=epsilon, pricing_date=pricing_date)
     price_val = float(tree.price(option))
     elapsed = time.perf_counter() - t0
     return price_val, elapsed
@@ -97,7 +97,7 @@ def tree_price(market: Market, N: int, pruning: bool, epsilon: float, pricing_da
 def compute_tree_and_greeks(market: Market, option: Option, inputs: AppInputs) -> tuple[TrinomialTree, dict]:
     """Construit l'arbre, calcule le prix et les grecs cote arbre."""
     tree_greeks = TrinomialTree(market, N=inputs.N, pruning=inputs.pruning,
-                                epsilon=inputs.epsilon, pricingDate=inputs.pricing_date)
+                                epsilon=inputs.epsilon, pricing_date=inputs.pricing_date)
     _ = tree_greeks.price(option, compute_greeks=True)
 
     # Grecs disponibles cote arbre
@@ -122,7 +122,7 @@ def compute_tree_and_greeks(market: Market, option: Option, inputs: AppInputs) -
 def compute_theta(tree_greeks: TrinomialTree, market: Market, option: Option, inputs: AppInputs) -> float:
     """Calcule Theta par difference finie sur +1 jour."""
     tree_next = TrinomialTree(market, N=inputs.N, pruning=inputs.pruning, epsilon=inputs.epsilon,
-                              pricingDate=inputs.pricing_date + dt.timedelta(days=1))
+                              pricing_date=inputs.pricing_date + dt.timedelta(days=1))
     v0 = float(tree_greeks.root.option_value)
     v1 = float(tree_next.price(option))
     return v1 - v0
@@ -159,7 +159,7 @@ st.caption("Paramétrez l’arbre, comparez à Black–Scholes, et explorez grap
 with st.sidebar:
     st.header("Paramètres")
 
-    today = dt.datetime.now().date()
+    today = dt.date.today()
     pricing_date = st.date_input("Pricing date", value=today)
     maturity = st.date_input("Maturity", value=today + dt.timedelta(days=180))
 
@@ -173,11 +173,11 @@ with st.sidebar:
 
     has_div = st.toggle("Dividende discret ?", value=False)
     dividend = 0.0
-    dividend_date: Optional[dt.datetime] = None
+    dividend_date: Optional[dt.date] = None
     if has_div:
         dividend = st.number_input("Montant dividende", min_value=0.0, value=0.0)
         div_date = st.date_input("Date dividende", value=today + dt.timedelta(days=90))
-        dividend_date = dt.datetime.combine(div_date, dt.time())
+        dividend_date = div_date
 
     st.subheader("Arbre trinomial")
     N = st.number_input("Nombre d’étapes N", min_value=1, max_value=2000, value=100, step=10)
@@ -204,8 +204,8 @@ with st.sidebar:
 
 # Rassemblement des inputs
 inputs = AppInputs(
-    pricing_date=dt.datetime.combine(pricing_date, dt.time()),
-    maturity=dt.datetime.combine(maturity, dt.time()),
+    pricing_date=pricing_date,
+    maturity=maturity,
     S0=float(S0), K=float(K), r=float(r), sigma=float(sigma),
     option_type=option_type, option_class=option_class,
     dividend=float(dividend), dividend_date=dividend_date,
@@ -263,7 +263,7 @@ st.subheader("Visualisation de l’arbre")
 
 # on crée l'arbre
 tree = TrinomialTree(market, N=inputs.N, pruning=inputs.pruning,
-                          epsilon=inputs.epsilon, pricingDate=inputs.pricing_date)
+                          epsilon=inputs.epsilon, pricing_date=inputs.pricing_date)
 _ = tree.price(option, build_tree=True)
 tree.plot_tree(y_max=280, y_min=30)
 fig = plt.gcf()

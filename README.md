@@ -70,7 +70,7 @@ Modules importants situés dans `src/pricing/`:
 - `Option(K, maturity: datetime, option_type: 'call'|'put', option_class: 'european'|'american')`
    Porte l’instrument. Méthode: `payoff(S)`.
 
-- `TrinomialTree(market, N, pruning=False, epsilon=1e-7, pricingDate=None)`
+- `TrinomialTree(market, N, pruning=False, epsilon=1e-7, pricing_date=None)`
    Modèle d’arbre trinomial.
    - `price(option, method='backward'|'recursive', build_tree=False, compute_greeks=False) -> float`
    - `delta()`, `gamma()`, `vega(option)`, `vanna(option)`, `rho(option)`
@@ -109,11 +109,13 @@ from pricing.market import Market
 from pricing.option import Option
 from pricing.trinomial_tree import TrinomialTree
 
-market = Market(S0=100.0, r=0.02, sigma=0.20)
-option = Option(K=100.0, maturity=dt.datetime(2025, 7, 1), option_type="call", option_class="european")
-tree = TrinomialTree(market, N=200, pruning=True, epsilon=1e-7, pricingDate=dt.datetime(2025, 1, 1))
-price = tree.price(option, method="backward", build_tree=True)
-print("Tree price:", price)
+market = Market(S0=100, r=0.05, sigma=0.30, dividend=3, dividend_date=dt.date(2026, 4, 21))
+option = Option(K=102, option_type="call", maturity=dt.date(2026, 9, 1), option_class="american")
+tree = TrinomialTree(market, N=700, pruning=True, epsilon=1e-10, pricing_date = dt.date(2025, 9, 1))
+
+# prix de l'arbre
+price = tree.price(option, compute_greeks=True, activate_timer=True)
+print("Prix de l’option:", price)
 
 # Grecs côté arbre
 _ = tree.price(option, compute_greeks=True)

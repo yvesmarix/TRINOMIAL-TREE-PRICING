@@ -26,7 +26,7 @@ def _make_tree_factory(market, pricing_date, pruning: bool, epsilon: float):
     """
     def _factory(n_steps: int) -> TrinomialTree:
         return TrinomialTree(
-            market, N=n_steps, pruning=pruning, epsilon=epsilon, pricingDate=pricing_date,
+            market, N=n_steps, pruning=pruning, epsilon=epsilon, pricing_date=pricing_date,
         )
     return _factory
 

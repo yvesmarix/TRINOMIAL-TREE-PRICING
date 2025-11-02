@@ -10,7 +10,7 @@ from pricing import Market, Option
 )
 def test_trinomial_tree_initialization(S0, r, sigma, dividend, N, epsilon):
     market = Market(S0=S0, r=r, sigma=sigma, dividend=dividend)
-    tree = TrinomialTree(market=market, N=N, pruning=True, epsilon=epsilon, pricingDate=dt.datetime(2025, 1, 1))
+    tree = TrinomialTree(market=market, N=N, pruning=True, epsilon=epsilon, pricing_date=dt.datetime(2025, 1, 1))
     assert tree.market == market
     assert tree.N == N
     assert tree.pruning is True
@@ -23,7 +23,7 @@ def test_trinomial_tree_initialization(S0, r, sigma, dividend, N, epsilon):
 )
 def test_trinomial_tree_compute_parameters(S0, r, sigma, dividend, K, maturity):
     market = Market(S0=S0, r=r, sigma=sigma, dividend=dividend, dividend_date=dt.datetime(2025, 6, 1))
-    tree = TrinomialTree(market=market, N=5, pruning=False, epsilon=1e-7, pricingDate=dt.datetime(2025, 1, 1))
+    tree = TrinomialTree(market=market, N=5, pruning=False, epsilon=1e-7, pricing_date=dt.datetime(2025, 1, 1))
     option = Option(K=K, option_type="call", maturity=maturity, option_class="european")
     tree.option = option
     tree._compute_parameters(S=market.S0, validate=True)
@@ -41,7 +41,7 @@ def test_trinomial_tree_compute_parameters(S0, r, sigma, dividend, K, maturity):
 def test_trinomial_tree_price(S0, r, sigma, K, maturity):
     market = Market(S0=S0, r=r, sigma=sigma, dividend=0.0)
     option = Option(K=K, option_type="call", maturity=maturity, option_class="european")
-    tree = TrinomialTree(market=market, N=50, pruning=False, epsilon=1e-7, pricingDate=dt.datetime(2025, 1, 1))
+    tree = TrinomialTree(market=market, N=50, pruning=False, epsilon=1e-7, pricing_date=dt.datetime(2025, 1, 1))
     price = tree.price(option, method="backward", build_tree=True)
     assert price > 0
 
@@ -52,7 +52,7 @@ def test_trinomial_tree_price(S0, r, sigma, K, maturity):
 def test_trinomial_tree_delta(S0, r, sigma, K, maturity):
     market = Market(S0=S0, r=r, sigma=sigma, dividend=0.0)
     option = Option(K=K, option_type="call", maturity=maturity, option_class="european")
-    tree = TrinomialTree(market=market, N=50, pruning=False, epsilon=1e-7, pricingDate=dt.datetime(2025, 1, 1))
+    tree = TrinomialTree(market=market, N=50, pruning=False, epsilon=1e-7, pricing_date=dt.datetime(2025, 1, 1))
     tree.price(option, compute_greeks=True)
     delta = tree.delta()
     assert isinstance(delta, float)
@@ -64,7 +64,7 @@ def test_trinomial_tree_delta(S0, r, sigma, K, maturity):
 def test_trinomial_tree_gamma(S0, r, sigma, K, maturity):
     market = Market(S0=S0, r=r, sigma=sigma, dividend=0.0)
     option = Option(K=K, option_type="call", maturity=maturity, option_class="european")
-    tree = TrinomialTree(market=market, N=50, pruning=False, epsilon=1e-7, pricingDate=dt.datetime(2025, 1, 1))
+    tree = TrinomialTree(market=market, N=50, pruning=False, epsilon=1e-7, pricing_date=dt.datetime(2025, 1, 1))
     tree.price(option, compute_greeks=True)
     gamma = tree.gamma()
     assert isinstance(gamma, float)
@@ -76,7 +76,7 @@ def test_trinomial_tree_gamma(S0, r, sigma, K, maturity):
 def test_trinomial_tree_vega(S0, r, sigma, K, maturity):
     market = Market(S0=S0, r=r, sigma=sigma, dividend=0.0)
     option = Option(K=K, option_type="call", maturity=maturity, option_class="european")
-    tree = TrinomialTree(market=market, N=50, pruning=False, epsilon=1e-7, pricingDate=dt.datetime(2025, 1, 1))
+    tree = TrinomialTree(market=market, N=50, pruning=False, epsilon=1e-7, pricing_date=dt.datetime(2025, 1, 1))
     tree.price(option, compute_greeks=True)
     vega = tree.vega(option)
     assert isinstance(vega, float)
@@ -88,7 +88,7 @@ def test_trinomial_tree_vega(S0, r, sigma, K, maturity):
 def test_trinomial_tree_vanna(S0, r, sigma, K, maturity):
     market = Market(S0=S0, r=r, sigma=sigma, dividend=0.0)
     option = Option(K=K, option_type="call", maturity=maturity, option_class="european")
-    tree = TrinomialTree(market=market, N=50, pruning=False, epsilon=1e-7, pricingDate=dt.datetime(2025, 1, 1))
+    tree = TrinomialTree(market=market, N=50, pruning=False, epsilon=1e-7, pricing_date=dt.datetime(2025, 1, 1))
     tree.price(option, compute_greeks=True)
     vanna = tree.vanna(option)
     assert isinstance(vanna, float)
@@ -100,7 +100,7 @@ def test_trinomial_tree_vanna(S0, r, sigma, K, maturity):
 def test_trinomial_tree_rho(S0, r, sigma, K, maturity):
     market = Market(S0=S0, r=r, sigma=sigma, dividend=0.0)
     option = Option(K=K, option_type="call", maturity=maturity, option_class="european")
-    tree = TrinomialTree(market=market, N=50, pruning=False, epsilon=1e-7, pricingDate=dt.datetime(2025, 1, 1))
+    tree = TrinomialTree(market=market, N=50, pruning=False, epsilon=1e-7, pricing_date=dt.datetime(2025, 1, 1))
     tree.price(option, compute_greeks=True)
     rho = tree.rho(option)
     assert isinstance(rho, float)
