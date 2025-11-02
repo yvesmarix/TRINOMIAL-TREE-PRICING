@@ -11,6 +11,14 @@ Optionnel (installé automatiquement avec l’extra `[dev]`) :
 
 ## 📦 Installation
 
+> Créez d’abord un environnement virtuel (ou bien installer le package sur le site-packages local).
+> ```bash
+> python3 -m venv my_venv
+Activez le :
+> pour windows : source my_venv/Scripts/activate
+> pour mac : source my_venv/bin/activate 
+> ```
+
 Cloner le dépôt puis installer le package localement. La découverte des packages se fait depuis `src/` (configurée dans `pyproject.toml`).
 
 Installation utilisateur (bibliothèque uniquement) :
@@ -27,12 +35,6 @@ Vérification rapide des tests (optionnel) :
 ```bash
 pytest -q
 ```
-
-> Astuce zsh/macOS: créez d’abord un environnement virtuel si besoin.
-> ```bash
-> python3 -m venv .venv
-> source .venv/bin/activate
-> ```
 
 ## 🧩 Ce que contient `pyproject.toml`
 Points clés de la configuration:
