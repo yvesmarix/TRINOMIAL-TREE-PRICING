@@ -283,6 +283,31 @@ new_ids = [fid for fid in plt.get_fignums() if fid not in prev_ids]
 for fid in new_ids:
     st.pyplot(plt.figure(fid), clear_figure=False)
 
+# --- Benchmark temps d'exécution ---
+st.markdown("---")
+st.subheader("Benchmark temps d’exécution (price() vs N)")
+
+# grille de N pour le benchmark
+N_vals_runtime = np.logspace(
+    np.log10(max(5, inputs.conv_min)),
+    np.log10(max(inputs.conv_max, inputs.conv_min + 1)),
+    8,
+    dtype=int,
+)
+
+prev_ids = set(plt.get_fignums())
+convergence.plot_runtime_vs_steps(
+    market,
+    option,
+    N_values=N_vals_runtime,
+    method="backward",
+    build_tree=True,
+    compute_greeks=False,
+)
+new_ids = [fid for fid in plt.get_fignums() if fid not in prev_ids]
+for fid in new_ids:
+    st.pyplot(plt.figure(fid), clear_figure=False)
+
 # --- Courbe prix vs Strike ---
 st.markdown("---")
 st.subheader("Courbe de prix en fonction du strike — BS vs Arbre")

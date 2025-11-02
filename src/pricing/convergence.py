@@ -1,8 +1,10 @@
 import datetime as dt
+import time
 import numpy as np
 import matplotlib.pyplot as plt
 
 from pricing import BlackScholesPricer, TrinomialTree
+
 
 def _setup_bs(market, option):
     """
@@ -76,7 +78,6 @@ def bs_convergence_by_strike(
 
     k_vals, bs_vals, tree_vals = [], [], []
     for k in strikes:
-        # on clone l'option en ne changeant que le strike
         opt_k = option.__class__(
             K=k, option_type=option.option_type,
             maturity=option.maturity, option_class=option.option_class,
@@ -84,7 +85,6 @@ def bs_convergence_by_strike(
         bs.update(K=k); k_vals.append(k); bs_vals.append(bs.price())
         tree_vals.append(tree.price(opt_k, build_tree=True))
 
-    # --- graphique ---
     _plot_strike_curve(k_vals, bs_vals, tree_vals, n_steps)
 
 
@@ -106,8 +106,29 @@ def bs_convergence_by_step(
     ]
     abs_errors = np.abs(np.array(tree_prices) - bs_price)
 
-    # --- prix vs N ---
     _plot_convergence_price(n_vals, tree_prices, bs_price)
-
-    # --- erreur log ---
     _plot_convergence_error(n_vals, abs_errors)
+
+
+def plot_runtime_vs_steps(
+    market, option, N_values, method="backward", build_tree=True, compute_greeks=False
+):
+    """
+    Affiche le temps d'exécution de price() en fonction du nombre de pas N (échelle log-log).
+    """
+    times = []
+    for N in N_values:
+        tree = TrinomialTree(market, N)
+        start = time.perf_counter()
+        tree.price(option, method=method, build_tree=build_tree, compute_greeks=compute_greeks)
+        elapsed = time.perf_counter() - start
+        times.append(elapsed)
+
+    plt.figure(figsize=(8, 5))
+    plt.loglog(N_values, times, marker='o')
+    plt.xlabel("Nombre de pas N (log)")
+    plt.ylabel("Temps d'exécution (s, log)")
+    plt.title("Temps d'exécution vs Nombre de pas (log-log)")
+    plt.grid(True, which="both", ls="--", alpha=0.5)
+    plt.tight_layout()
+    plt.show()

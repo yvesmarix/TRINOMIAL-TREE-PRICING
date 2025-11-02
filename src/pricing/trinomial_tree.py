@@ -27,7 +27,7 @@ class TrinomialTree(Model):
         N: int,
         pruning: bool = False,
         epsilon: Optional[float] = None,
-        pricingDate: Optional[dt.date] = None,
+        pricing_date: Optional[dt.date] = None,
     ) -> None:
         """Initialise le modele avec parametres de marche et profondeur N."""
         self.market = market
@@ -35,7 +35,7 @@ class TrinomialTree(Model):
         # decision de pruner (utile pour du debug)
         self.pruning = pruning
         self.epsilon = epsilon if epsilon is not None else 1e-7
-        super().__init__(pricingDate or dt.date.today())
+        super().__init__(pricing_date or dt.date.today())
 
     # ------------------------------------------------------------------ #
     # Pricing
@@ -85,7 +85,7 @@ class TrinomialTree(Model):
                 if self._should_prune_node(node): # decision de pruner
                     node.prune_monomial(self, dividend)
                 else:
-                    node.create_children(self, i, dividend) # creation du triplet
+                    node.create_children(self, dividend) # creation du triplet
             if dividend: # on revient aux anciennes probas
                 self._compute_parameters(t.S, validate=True)
             t = t.next_mid
@@ -104,7 +104,9 @@ class TrinomialTree(Model):
         """Γ via derivees finies dans l’espace log(S)."""
         h, S0 = self._get_bump(), self.market.S0
         Vu, Vd, V0 = self.root.up.option_value, self.root.down.option_value, self.root.option_value
+        # derivee premiere puis seconde
         g1, g2 = (Vu - Vd) / (2 * h), (Vu - 2 * V0 + Vd) / (h**2)
+        # on revient en S, reproduit la structure differentielle de black
         return (g2 - g1) / (S0**2)
 
     def vega(self, option: Option, bump: float = 0.01) -> float:
@@ -188,7 +190,7 @@ class TrinomialTree(Model):
         E = fwd - dividend
 
         self.p_down, self.p_up, self.p_mid = compute_probabilities(
-            E, fwd, var, self.alpha, dividend=True
+            E, fwd, var, self.alpha, dividend=dividend
         )
         # check bornes
         if validate:
@@ -238,7 +240,6 @@ class TrinomialTree(Model):
         self, depth: int, proba_min: float
     ) -> Tuple[List[float], List[float], List[float], List[Tuple[tuple, tuple]], List[float]]:
         """Parcours bfs pour recuperer positions, tailles et arêtes du graphe."""
-        from collections import deque
 
         visited, seen = set(), set()  # pour eviter de repasser sur les mêmes nœuds/segments
         q = deque([(n, 0) for n in iter_column(self.root)])  # colonne 0 : racine + eventuels freres
