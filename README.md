@@ -11,9 +11,9 @@ Optionnel (installé automatiquement avec l’extra `[dev]`) :
 
 ## 📦 Installation
 
-> Créez d’abord un environnement virtuel (ou bien installer le package sur le site-packages local).
+> Créez d’abord un environnement virtuel (ou bien installez le package sur le site-packages local).
 > ```bash
-> python3 -m venv my_venv
+> python -m venv my_venv
 Activez le :
 > pour windows : source my_venv/Scripts/activate
 > pour mac : source my_venv/bin/activate 
@@ -48,6 +48,8 @@ Conséquence pratique: `pip install -e .[dev]` installe la lib en editable et aj
 ## 🚀 Démarrer l’application Streamlit
 
 Après installation (idéalement `[dev]`), lancez l’UI:
+
+Exécutez :
 ```bash
 streamlit run streamlit_app.py
 ```
@@ -87,6 +89,7 @@ Modules importants situés dans `src/pricing/`:
 - `convergence`
    - `bs_convergence_by_step(market, option, max_n=400, step=25, ...)`
    - `bs_convergence_by_strike(market, option, strikes, n_steps=200, ...)`
+   - `plot_runtime_vs_steps(market, option, N_values)`
 
 - `funcs`
    - `compute_forward`, `compute_variance`, `compute_probabilities`, `iter_column`, `probas_valid`
